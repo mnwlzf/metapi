@@ -9,6 +9,7 @@ import {
 import { proxyLogEventBus, type ProxyLogEvent } from '../../services/proxyLogEventBus.js';
 import { parseProxyLogMessageMeta } from '../../services/proxyLogMessage.js';
 import { canonicalizeModelName } from '../../shared/modelCanonicalization.js';
+import { resolveUpstreamGroupRate } from '../../services/upstreamGroupRateResolver.js';
 import {formatUtcSqlDateTime} from '../../services/localTimeService.js';
 import {
   normalizeProxyLogsView,
@@ -270,6 +271,7 @@ function mapProxyLogRow(
       name?: string | null;
       groupName?: string | null;
       tags?: string | null;
+      maxUpstreamRate?: number | null;
     } | null;
   },
   options?: { includeBillingDetails?: boolean },
@@ -280,6 +282,15 @@ function mapProxyLogRow(
       ? row.proxy_logs.errorMessage
       : '',
   );
+  const tokenGroup = row.account_tokens?.tokenGroup || null;
+  // The multiplier this request actually billed at, resolved from the same
+  // sources the router uses (upstream pricing group_ratio / sub2api catalog).
+  // Caches may be cold for historical rows, so unknown is a real answer.
+  const accountId = typeof row.proxy_logs.accountId === 'number' ? row.proxy_logs.accountId : null;
+  const siteId = row.sites?.id || null;
+  const groupRateResolution = accountId && siteId
+    ? resolveUpstreamGroupRate({ site: { id: siteId }, account: { id: accountId }, token: { tokenGroup } })
+    : null;
   return {
     ...row.proxy_logs,
     isStream:
@@ -303,13 +314,18 @@ function mapProxyLogRow(
     username: row.accounts?.username || null,
     tokenId: typeof row.proxy_logs.tokenId === 'number' ? row.proxy_logs.tokenId : null,
     tokenName: row.account_tokens?.name || null,
-    tokenGroup: row.account_tokens?.tokenGroup || null,
+    tokenGroup,
+    tokenGroupRate: groupRateResolution?.known ? groupRateResolution.rate : null,
+    tokenGroupRateSource: groupRateResolution?.known ? groupRateResolution.source : null,
     siteId: row.sites?.id || null,
     siteName: row.sites?.name || null,
     siteUrl: row.sites?.url || null,
     downstreamKeyId: row.downstream_api_keys?.id || null,
     downstreamKeyName: row.downstream_api_keys?.name || null,
     downstreamKeyGroupName: row.downstream_api_keys?.groupName || null,
+    downstreamKeyMaxUpstreamRate: typeof row.downstream_api_keys?.maxUpstreamRate === 'number'
+      ? row.downstream_api_keys.maxUpstreamRate
+      : null,
     downstreamKeyTags: parseDownstreamKeyTags(row.downstream_api_keys?.tags),
   };
 }
@@ -543,6 +559,7 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
               name: schema.downstreamApiKeys.name,
               groupName: schema.downstreamApiKeys.groupName,
               tags: schema.downstreamApiKeys.tags,
+              maxUpstreamRate: schema.downstreamApiKeys.maxUpstreamRate,
             },
           })
           .from(schema.proxyLogs)
@@ -930,11 +947,16 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
               proxy_logs: fields,
               accounts: schema.accounts,
               sites: schema.sites,
+              account_tokens: {
+                name: schema.accountTokens.name,
+                tokenGroup: schema.accountTokens.tokenGroup,
+              },
               downstream_api_keys: {
                 id: schema.downstreamApiKeys.id,
                 name: schema.downstreamApiKeys.name,
                 groupName: schema.downstreamApiKeys.groupName,
                 tags: schema.downstreamApiKeys.tags,
+                maxUpstreamRate: schema.downstreamApiKeys.maxUpstreamRate,
               },
             })
             .from(schema.proxyLogs)
@@ -943,6 +965,10 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
               eq(schema.proxyLogs.accountId, schema.accounts.id),
             )
             .leftJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+            .leftJoin(
+              schema.accountTokens,
+              eq(schema.proxyLogs.tokenId, schema.accountTokens.id),
+            )
             .leftJoin(
               schema.downstreamApiKeys,
               eq(
@@ -964,11 +990,16 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
               name?: string | null;
               url?: string | null;
             } | null;
+            account_tokens?: {
+              name?: string | null;
+              tokenGroup?: string | null;
+            } | null;
             downstream_api_keys: {
               id?: number | null;
               name?: string | null;
               groupName?: string | null;
               tags?: string | null;
+              maxUpstreamRate?: number | null;
             } | null;
           }
         | undefined;

@@ -7,6 +7,7 @@ import {
   SubscriptionPlanSummary,
   SubscriptionSummary,
   type DeleteApiTokenResult,
+  type ModelPriceCatalogEntry,
   type SiteAnnouncement,
   type UserGroupInfo,
   UserInfo,
@@ -871,6 +872,77 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
 
     console.warn('[sub2api] getUserGroupCatalog: all variants failed');
     return [];
+  }
+
+  /**
+   * Absolute per-token prices, published by the same catalog payload that
+   * carries the groups (`platforms[].supported_models[].pricing`). sub2api has
+   * no new-api ratio table, so this is the only truthful price source.
+   */
+  async getModelPriceCatalog(baseUrl: string, accessToken: string): Promise<ModelPriceCatalogEntry[]> {
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    const endpoints = ['/api/v1/groups/available', '/api/v1/groups', '/api/v1/group'];
+    const headers = this.buildAuthHeader(accessToken);
+
+    for (const endpoint of endpoints) {
+      try {
+        const res = await this.fetchJson<any>(
+          `${normalizedBase}${endpoint}?page=1&page_size=${SUB2API_GROUP_CATALOG_PAGE_SIZE}`,
+          { headers },
+        );
+        let parsed: any = res;
+        try {
+          parsed = this.parseSub2ApiEnvelope<any>(res, endpoint);
+        } catch {
+          parsed = res;
+        }
+        const entries = this.parseModelPriceCatalog(parsed);
+        if (entries.length > 0) return entries;
+      } catch {
+        // Unsupported/absent endpoint: try the next variant.
+      }
+    }
+
+    return [];
+  }
+
+  private parseModelPriceCatalog(payload: unknown): ModelPriceCatalogEntry[] {
+    const byModel = new Map<string, ModelPriceCatalogEntry>();
+
+    const readPrice = (value: unknown): number | null => {
+      const parsed = typeof value === 'number' ? value : Number(value);
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+    };
+
+    const visit = (node: unknown): void => {
+      if (!node || typeof node !== 'object') return;
+      const record = node as Record<string, unknown>;
+      const models = record.supported_models ?? record.supportedModels;
+      if (Array.isArray(models)) {
+        for (const item of models) {
+          if (!item || typeof item !== 'object') continue;
+          const model = item as Record<string, unknown>;
+          const name = typeof model.name === 'string' ? model.name.trim() : '';
+          const pricing = model.pricing;
+          if (!name || !pricing || typeof pricing !== 'object') continue;
+          const prices = pricing as Record<string, unknown>;
+          const input = readPrice(prices.input_price ?? prices.inputPrice);
+          const output = readPrice(prices.output_price ?? prices.outputPrice);
+          if (input === null || output === null) continue;
+          byModel.set(name.toLowerCase(), {
+            modelName: name,
+            input,
+            output,
+            cacheRead: readPrice(prices.cache_read_price ?? prices.cacheReadPrice) ?? 0,
+            cacheWrite: readPrice(prices.cache_write_price ?? prices.cacheWritePrice) ?? 0,
+          });
+        }
+      }
+      for (const value of Object.values(record)) visit(value);
+    };
+
+    visit(payload);
+    return [...byModel.values()];
   }
 
   /**

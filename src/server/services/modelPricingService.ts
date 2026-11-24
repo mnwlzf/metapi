@@ -10,6 +10,12 @@ import {
   modelsDevCostToPricingModel,
 } from './modelPriceCatalogService.js';
 import { evaluateTieredExprInSandbox } from './tieredExprSandbox.js';
+import {
+  findSub2apiModelPrice,
+  isSub2apiPlatform,
+  loadSub2apiPricingCatalog,
+  resolveSub2apiGroupRate,
+} from './sub2apiPricingService.js';
 import { createBoundedCache } from '../shared/boundedCache.js';
 
 const PRICE_CACHE_MAX_ENTRIES = 512;
@@ -125,7 +131,7 @@ interface ModelPricingCatalog {
   groupRatio: Record<string, number>;
 }
 
-export type ProxyBillingBasis = 'new-api-ratio' | 'upstream-quota';
+export type ProxyBillingBasis = 'new-api-ratio' | 'sub2api-per-token' | 'upstream-quota';
 
 export interface ProxyBillingDetails {
   /**
@@ -137,6 +143,22 @@ export interface ProxyBillingDetails {
   basis?: ProxyBillingBasis;
   /** Platform of the site that served the request, so the UI can explain the basis. */
   platform?: string;
+  /**
+   * How `computedTotalCost` was derived. `sub2api-per-token` means the upstream
+   * publishes absolute per-token prices, so the ratio table never applied.
+   */
+  estimateBasis?: 'new-api-ratio' | 'sub2api-per-token';
+  /** sub2api price inputs that produced the estimate, for an honest breakdown. */
+  perToken?: {
+    /** USD per 1M tokens at 1x, before the group multiplier. */
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cacheReadPerMillion: number;
+    cacheCreationPerMillion: number;
+    /** Rate multiplier applied to the prices above. */
+    groupRate: number;
+    source: 'catalog';
+  };
   /** What the local price model computed, persisted even when a quota overrode it. */
   computedTotalCost?: number;
   /** Upstream's own charge, when its usage log reported one. */
@@ -151,7 +173,12 @@ export interface ProxyBillingDetails {
     billablePromptTokens: number;
     promptTokensIncludeCache: boolean | null;
   };
-  pricing: {
+  /**
+   * new-api ratio table that produced the estimate. Absent for
+   * `sub2api-per-token` rows: sub2api publishes no ratio table at all, so
+   * printing ratios there would be fiction.
+   */
+  pricing?: {
     modelRatio: number;
     completionRatio: number;
     cacheRatio: number;
@@ -1096,6 +1123,82 @@ export function fallbackTokenCost(totalTokens: number, _platform: string): numbe
   return roundCost(toPositiveInt(totalTokens) / 500_000);
 }
 
+/**
+ * sub2api billing: absolute per-token prices x the group's rate multiplier.
+ *
+ * This exists because sub2api publishes no new-api `model_ratio` table. Its
+ * prices are already absolute USD per token (`input_price` 9e-6 for
+ * deepseek-v4-pro, `output_price` 2.7e-5), and the discount lives in the group's
+ * `rate_multiplier`. Estimating with the ratio table and then multiplying by the
+ * group rate mixes two price bases and lands far off (measured -39% on one site,
+ * -93% once the multiplier was applied on top).
+ *
+ * Returns null whenever the platform is not sub2api or no price is published, so
+ * callers fall back to the ratio path instead of inventing a number.
+ */
+async function buildSub2apiBillingDetails(
+  input: EstimateProxyCostInput,
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    cacheReadTokens?: number;
+    cacheCreationTokens?: number;
+    promptTokensIncludeCache?: boolean | null;
+  },
+): Promise<ProxyBillingDetails | null> {
+  if (!isSub2apiPlatform(input.site?.platform)) return null;
+
+  const catalog = await loadSub2apiPricingCatalog({
+    accountId: input.account.id,
+    siteUrl: input.site.url,
+    accessToken: input.account.accessToken ?? input.account.apiToken ?? null,
+  });
+  if (!catalog) return null;
+
+  const price = findSub2apiModelPrice(catalog, input.modelName);
+  if (!price) return null;
+
+  const groupRate = resolveSub2apiGroupRate(catalog, input.tokenGroup ?? null) ?? 1;
+  const normalized = normalizeUsageBreakdownInput(usage);
+  const inputPerToken = price.input * groupRate;
+  const outputPerToken = price.output * groupRate;
+  const cacheReadPerToken = price.cacheRead * groupRate;
+  const cacheCreationPerToken = price.cacheWrite * groupRate;
+
+  const inputCost = roundCost(normalized.billablePromptTokens * inputPerToken);
+  const outputCost = roundCost(normalized.completionTokens * outputPerToken);
+  const cacheReadCost = roundCost(normalized.cacheReadTokens * cacheReadPerToken);
+  const cacheCreationCost = roundCost(normalized.cacheCreationTokens * cacheCreationPerToken);
+
+  return {
+    basis: 'sub2api-per-token',
+    platform: 'sub2api',
+    estimateBasis: 'sub2api-per-token',
+    perToken: {
+      inputPerMillion: roundCost(price.input * 1_000_000),
+      outputPerMillion: roundCost(price.output * 1_000_000),
+      cacheReadPerMillion: roundCost(price.cacheRead * 1_000_000),
+      cacheCreationPerMillion: roundCost(price.cacheWrite * 1_000_000),
+      groupRate,
+      source: 'catalog',
+    },
+    quotaType: 0,
+    usage: normalized,
+    breakdown: {
+      inputPerMillion: roundCost(inputPerToken * 1_000_000),
+      outputPerMillion: roundCost(outputPerToken * 1_000_000),
+      cacheReadPerMillion: roundCost(cacheReadPerToken * 1_000_000),
+      cacheCreationPerMillion: roundCost(cacheCreationPerToken * 1_000_000),
+      inputCost,
+      outputCost,
+      cacheReadCost,
+      cacheCreationCost,
+      totalCost: roundCost(inputCost + outputCost + cacheReadCost + cacheCreationCost),
+    },
+  };
+}
+
 export async function estimateProxyCost(input: EstimateProxyCostInput): Promise<number> {
   const promptTokens = toPositiveInt(input.promptTokens);
   const completionTokens = toPositiveInt(input.completionTokens);
@@ -1114,6 +1217,11 @@ export async function estimateProxyCost(input: EstimateProxyCostInput): Promise<
       const pricingOverride = buildPricingOverrideModel(input.modelName, input.billingPricingOverride);
       return calculateModelUsageCost(pricingOverride.model, usage, pricingOverride.groupRatio);
     }
+
+    // sub2api prices per token; using the new-api ratio table here would be a
+    // different price basis, not a missing multiplier.
+    const sub2apiDetails = await buildSub2apiBillingDetails(input, usage);
+    if (sub2apiDetails) return sub2apiDetails.breakdown.totalCost;
 
     const pricingData = await getPricingDataCached(input);
     if (!pricingData) {
@@ -1185,6 +1293,9 @@ export async function buildProxyBillingDetails(input: EstimateProxyCostInput): P
       const pricingOverride = buildPricingOverrideModel(input.modelName, input.billingPricingOverride);
       return calculateModelUsageBreakdown(pricingOverride.model, usage, pricingOverride.groupRatio, input.tokenGroup);
     }
+
+    const sub2apiDetails = await buildSub2apiBillingDetails(input, usage);
+    if (sub2apiDetails) return sub2apiDetails;
 
     const pricingData = await getPricingDataCached(input);
     if (!pricingData) {

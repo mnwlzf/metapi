@@ -121,6 +121,42 @@ describe('billing detail display by basis', () => {
     expect(lines).toContain('本地估算：sub2api 站点按站点单价 × 分组倍率计费');
   });
 
+  it('renders the sub2api per-token basis as price x group multiplier', () => {
+    const log = logWith({
+      basis: 'sub2api-per-token',
+      estimateBasis: 'sub2api-per-token',
+      platform: 'sub2api',
+      computedTotalCost: 0.00015,
+      perToken: {
+        inputPerMillion: 9,
+        outputPerMillion: 27,
+        cacheReadPerMillion: 0.3,
+        cacheCreationPerMillion: 0,
+        groupRate: 0.12,
+        source: 'catalog',
+      },
+      quotaType: 0,
+      usage,
+      breakdown: {
+        ...breakdown,
+        inputPerMillion: 1.08,
+        outputPerMillion: 3.24,
+        totalCost: 0.00015,
+      },
+    });
+
+    const summary = formatBillingDetailSummary(log) ?? '';
+    expect(summary).toContain('站点单价');
+    expect(summary).toContain('分组倍率 0.12');
+    expect(summary).not.toContain('模型倍率');
+
+    const lines = buildBillingProcessLines(log).join('\n');
+    expect(lines).toContain('计价口径：sub2api 站点单价 × 分组倍率（0.12）');
+    expect(lines).toContain('提示 $9 / 1M × 0.12 = $1.08 / 1M');
+    expect(lines).toContain('补全 $27 / 1M × 0.12 = $3.24 / 1M');
+    expect(lines).toContain('= $0.000150');
+  });
+
   it('returns nothing to render when the row has no billing details', () => {
     expect(formatBillingDetailSummary(logWith(null))).toBeNull();
     expect(buildBillingProcessLines(logWith(null))).toEqual([]);

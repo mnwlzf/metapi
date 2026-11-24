@@ -29,7 +29,7 @@ import PageJumpInput from '../components/PageJumpInput.js';
 import PaginationControls from '../components/PaginationControls.js';
 import ListPage from '../components/ListPage.js';
 import { parseProxyLogPathMeta } from './helpers/proxyLogPathMeta.js';
-import {DEFAULT_PROXY_DEBUG_SETTINGS, DEBUG_REFRESH_INTERVAL_MS, DEBUG_TRACE_PAGE_SIZE, EMPTY_SUMMARY, TRACE_TABLE_LIMIT, buildBillingProcessLines, buildProxyDebugSettingsPayload, buildProxyLogsRouteSearch, firstByteColor, formatBillingDetailSummary, formatFirstByteLabel, formatLatency, formatProxyDebugCaptureSummary, formatProxyDebugTargetSummary, formatProxyLogTokenValue, formatProxyLogUsageSource, formatStreamModeLabel, formatTokensPerSecond, latencyColor, normalizeProxyDebugSettings, parseStoredDebugPreview, persistDebugTracePanelExpanded, readProxyLogsRouteState, readStoredDebugTracePanelExpanded, renderDownstreamKeySummary, proxyLogKeyChipColors, resolveProxyLogClientDisplay, proxyLogRetryColor, resolveProxyLogInputTokens, toApiTimeBoundary, formatProxyLogTokenPair, type ProxyDebugSettingsState, type ProxyLogRenderItem} from './helpers/proxyLogsHelpers.js';
+import {DEFAULT_PROXY_DEBUG_SETTINGS, DEBUG_REFRESH_INTERVAL_MS, DEBUG_TRACE_PAGE_SIZE, EMPTY_SUMMARY, TRACE_TABLE_LIMIT, formatCompactNumber, buildBillingProcessLines, buildProxyDebugSettingsPayload, buildProxyLogsRouteSearch, firstByteColor, formatBillingDetailSummary, formatFirstByteLabel, formatLatency, formatProxyDebugCaptureSummary, formatProxyDebugTargetSummary, formatProxyLogTokenValue, formatProxyLogUsageSource, formatStreamModeLabel, formatTokensPerSecond, latencyColor, normalizeProxyDebugSettings, parseStoredDebugPreview, persistDebugTracePanelExpanded, readProxyLogsRouteState, readStoredDebugTracePanelExpanded, renderDownstreamKeySummary, proxyLogKeyChipColors, resolveProxyLogClientDisplay, proxyLogRetryColor, resolveProxyLogInputTokens, toApiTimeBoundary, formatProxyLogTokenPair, type ProxyDebugSettingsState, type ProxyLogRenderItem} from './helpers/proxyLogsHelpers.js';
 import {CompactSummaryMetric, copyTextToClipboard, renderProxyLogClientCell, ProxyLogTimingCell, StreamModeIcon} from './helpers/proxyLogsUi.js';
 import {
   renderTraceStatusBadge,
@@ -1789,6 +1789,18 @@ export default function ProxyLogs() {
                           value={downstreamKeySummary.replace(/^密钥:\s*/, '')}
                         />
                       ) : null}
+                      <MobileField
+                        label={tr('账号分组倍率')}
+                        value={typeof detailLog.tokenGroupRate === 'number'
+                          ? formatCompactNumber(detailLog.tokenGroupRate)
+                          : tr('未知')}
+                      />
+                      <MobileField
+                        label={tr('密钥倍率上限')}
+                        value={detailLog.downstreamKeyMaxUpstreamRate == null
+                          ? tr('不限')
+                          : formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}
+                      />
                       <div className="mobile-billing-block">
                         <div className="mobile-field-label" style={{ marginBottom: 2 }}>{tr('计费过程')}</div>
                         {billingProcessLines.length > 0 ? (
@@ -2378,6 +2390,31 @@ export default function ProxyLogs() {
                                         {Array.isArray(detailLog.downstreamKeyTags)
                                           && detailLog.downstreamKeyTags.length > 0
                                           ? `，标签: ${detailLog.downstreamKeyTags.join(' / ')}`
+                                          : null}
+                                      </div>
+                                      <div>{tr('账号分组倍率：')}<strong style={{ color: 'var(--color-text-primary)' }}>
+                                          {typeof detailLog.tokenGroupRate === 'number'
+                                            ? formatCompactNumber(detailLog.tokenGroupRate)
+                                            : tr('未知')}
+                                        </strong>
+                                        {detailLog.tokenGroupRateSource === 'catalog'
+                                          ? <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{tr('（站点分组表）')}</span>
+                                          : null}
+                                      </div>
+                                      <div>{tr('密钥倍率上限：')}<strong style={{ color: 'var(--color-text-primary)' }}>
+                                          {detailLog.downstreamKeyMaxUpstreamRate == null
+                                            ? tr('不限')
+                                            : formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}
+                                        </strong>
+                                        {typeof detailLog.tokenGroupRate === 'number'
+                                          && typeof detailLog.downstreamKeyMaxUpstreamRate === 'number'
+                                          ? (
+                                            <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
+                                              {detailLog.tokenGroupRate <= detailLog.downstreamKeyMaxUpstreamRate
+                                                ? tr('（在范围内）')
+                                                : tr('（超出上限）')}
+                                            </span>
+                                          )
                                           : null}
                                       </div>
                                     </div>

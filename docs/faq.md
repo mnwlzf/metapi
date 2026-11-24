@@ -183,9 +183,11 @@ docker compose up -d
 **A:** 因为两件事用了不同的计价口径，metapi 现在会把它们分开标注：
 
 - **实际扣费（站点账本）**：请求结束时，metapi 会回查上游站点的用量日志（sub2api 走 `/api/v1/usage`，new-api 系走 `/api/log/self`）。站点日志里带 `quota` 时，`quota ÷ 500000` 就是站点实际扣的钱，metapi **直接采用**这个金额。这时详情里显示"站点实收"，并单独标注"本地推演"。
-- **本地推演（倍率表）**：如果拿不到站点 `quota`，metapi 只能按价格表估算。new-api 系是 `model_ratio × 2 × group_ratio`（1 倍率 ≈ $2/1M）；sub2api 则是站点自己的「per-token 单价 × 分组倍率」，与 new-api 的 ratio 表**不是同一个口径**，所以 sub2api 站点的推演结果可能明显偏离实际，界面会标注"仅供参考"。
+- **本地推演（倍率表）**：如果拿不到站点 `quota`，metapi 按平台各自的价格口径估算：
+  - **new-api / one-api 系**：`model_ratio × 2 × group_ratio`（1 倍率 ≈ $2/1M tokens）；
+  - **sub2api**：站点自己公布的 **per-token 单价 × 分组倍率**（`input_price` / `output_price` / 缓存价格 × `rate_multiplier`）。sub2api 没有 new-api 那套 ratio 表，两者不是同一个价格基准，所以不能互相换算，详情里会标明用的是哪一种。
 
-一句话：**看"实际扣费/站点实收"那一行才准；"本地推演"只用于站点账本不可得的兜底**。
+一句话：**"实际扣费 / 站点实收"那一行才准；"本地推演"用于站点账本不可得的兜底**。详情里同时会显示本次所用令牌的**账号分组倍率**和该密钥配置的**倍率上限**，方便核对是哪个分组、有没有触顶。
 
 ### Q: 下游 Key 可以配多个吗
 

@@ -80,8 +80,17 @@ export interface SiteAnnouncement {
   rawPayload?: unknown;
 }
 
-export interface UserGroupInfo {
-  /**
+export interface ModelPriceCatalogEntry {
+  /** Model name as the upstream publishes it. */
+  modelName: string;
+  /** USD per token at 1x (before the group multiplier is applied). */
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+}
+
+export interface UserGroupInfo {  /**
    * Upstream identifier for the group. sub2api keys are bound by numeric group
    * id, so the id is what token create/update payloads must carry. Null when
    * the platform only exposes group names.
@@ -143,6 +152,13 @@ export interface PlatformAdapter {
    * `getUserGroups()` and render the raw key.
    */
   getUserGroupCatalog?(baseUrl: string, accessToken: string, platformUserId?: number): Promise<UserGroupInfo[]>;
+  /**
+   * Absolute per-token model prices, for platforms that do not publish new-api's
+   * `model_ratio` table (sub2api publishes `input_price` / `output_price` /
+   * cache prices per token). Optional: callers fall back to the ratio pricing
+   * path, and must never invent a price when this returns nothing.
+   */
+  getModelPriceCatalog?(baseUrl: string, accessToken: string, platformUserId?: number): Promise<ModelPriceCatalogEntry[]>;
   createApiToken(baseUrl: string, accessToken: string, platformUserId?: number, options?: CreateApiTokenOptions): Promise<boolean>;
   deleteApiToken(baseUrl: string, accessToken: string, tokenKey: string, platformUserId?: number): Promise<DeleteApiTokenResult>;
 }

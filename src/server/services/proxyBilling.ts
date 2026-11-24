@@ -102,7 +102,10 @@ export async function resolveProxyLogBilling(
   if (billingDetails) {
     billingDetails.computedTotalCost = computedTotalCost;
     billingDetails.platform = String(input.site.platform || '') || undefined;
-    billingDetails.basis = quotaApplied ? 'upstream-quota' : 'new-api-ratio';
+    // Keep how the *estimate* was derived (ratio table vs sub2api per-token
+    // prices) and only override the recorded basis when a quota actually won.
+    billingDetails.estimateBasis = billingDetails.estimateBasis ?? 'new-api-ratio';
+    billingDetails.basis = quotaApplied ? 'upstream-quota' : billingDetails.estimateBasis;
     if (quotaAmount > 0) {
       billingDetails.quota = { amount: quotaAmount, applied: quotaApplied };
     }

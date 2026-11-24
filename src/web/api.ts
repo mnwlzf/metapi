@@ -379,17 +379,28 @@ export type ProxyLogStatusFilter = 'all' | 'success' | 'failed';
 export type ProxyLogClientConfidence = 'exact' | 'heuristic' | 'user_agent' | 'unknown' | null;
 export type ProxyLogUsageSource = 'upstream' | 'self-log' | 'unknown' | null;
 
-export type ProxyLogBillingBasis = 'new-api-ratio' | 'upstream-quota';
+export type ProxyLogBillingBasis = 'new-api-ratio' | 'sub2api-per-token' | 'upstream-quota';
 
 export type ProxyLogBillingDetails = {
   /** Absent on rows written before the basis was recorded: treat as 'new-api-ratio'. */
   basis?: ProxyLogBillingBasis;
+  /** How `computedTotalCost` was derived. */
+  estimateBasis?: 'new-api-ratio' | 'sub2api-per-token';
   /** Site platform that served the request ('sub2api' bills from its own ledger). */
   platform?: string;
   /** What this instance's price model computed, even when a quota overrode it. */
   computedTotalCost?: number;
   /** The upstream's own charge, when its usage log reported one. */
   quota?: { amount: number; applied: boolean };
+  /** sub2api per-token prices (1x) and the group multiplier applied to them. */
+  perToken?: {
+    inputPerMillion: number;
+    outputPerMillion: number;
+    cacheReadPerMillion: number;
+    cacheCreationPerMillion: number;
+    groupRate: number;
+    source: 'catalog';
+  };
   quotaType: number;
   usage: {
     promptTokens: number;
@@ -400,7 +411,8 @@ export type ProxyLogBillingDetails = {
     billablePromptTokens: number;
     promptTokensIncludeCache: boolean | null;
   };
-  pricing: {
+  /** Absent for sub2api rows, which have no ratio table at all. */
+  pricing?: {
     modelRatio: number;
     completionRatio: number;
     cacheRatio: number;
@@ -442,6 +454,12 @@ export type ProxyLogListItem = {
   downstreamKeyId?: number | null;
   downstreamKeyName?: string | null;
   downstreamKeyGroupName?: string | null;
+  /** The key's configured upstream rate ceiling (`max_upstream_rate`), null = none. */
+  downstreamKeyMaxUpstreamRate?: number | null;
+  /** Rate multiplier of the token's upstream group, resolved at read time. */
+  tokenGroupRate?: number | null;
+  tokenGroupRateSource?: 'pricing' | 'catalog' | null;
+  tokenGroup?: string | null;
   downstreamKeyTags?: string[];
   clientFamily?: string | null;
   clientAppId?: string | null;

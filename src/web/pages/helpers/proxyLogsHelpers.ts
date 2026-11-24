@@ -304,7 +304,18 @@ export function formatBillingDetailSummary(log: ProxyLogRenderItem) {
     return parts.join('，');
   }
 
-  const ratioText = `模型倍率 ${formatCompactNumber(detail.pricing.modelRatio)}，输出倍率 ${formatCompactNumber(detail.pricing.completionRatio)}，缓存倍率 ${formatCompactNumber(detail.pricing.cacheRatio)}，缓存创建倍率 ${formatCompactNumber(detail.pricing.cacheCreationRatio)}，分组倍率 ${formatCompactNumber(detail.pricing.groupRatio)}`;
+  const ratioText = detail.pricing
+    ? `模型倍率 ${formatCompactNumber(detail.pricing.modelRatio)}，输出倍率 ${formatCompactNumber(detail.pricing.completionRatio)}，缓存倍率 ${formatCompactNumber(detail.pricing.cacheRatio)}，缓存创建倍率 ${formatCompactNumber(detail.pricing.cacheCreationRatio)}，分组倍率 ${formatCompactNumber(detail.pricing.groupRatio)}`
+    : null;
+
+  // sub2api: absolute per-token prices x group multiplier. There is no ratio
+  // table, so show the basis that actually produced the number.
+  if (basis === 'sub2api-per-token' && detail.perToken) {
+    const t = detail.perToken;
+    return `站点单价 提示 $${formatCompactNumber(t.inputPerMillion)}/1M × 分组倍率 ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.inputPerMillion)}/1M，补全 $${formatCompactNumber(t.outputPerMillion)}/1M × ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.outputPerMillion)}/1M（本地估算）`;
+  }
+
+  if (!ratioText) return `本地估算 $${(detail.computedTotalCost ?? detail.breakdown.totalCost).toFixed(6)}（实际以站点扣费为准）`;
   return `${ratioText}（本地估算${sub2api ? '，sub2api 站点口径不同，仅供参考' : ''}）`;
 }
 
@@ -362,6 +373,22 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
     return lines;
   }
 
+  // sub2api native basis: prices are absolute per token, the discount is the
+  // group multiplier. Print exactly that, so the arithmetic matches the charge.
+  if (detail.basis === 'sub2api-per-token' && detail.perToken) {
+    const t = detail.perToken;
+    const perMillion = (value: number) => formatCompactNumber(value);
+    return [
+      `计价口径：sub2api 站点单价 × 分组倍率（${perMillion(t.groupRate)}）`,
+      `提示 $${perMillion(t.inputPerMillion)} / 1M × ${perMillion(t.groupRate)} = $${perMillion(detail.breakdown.inputPerMillion)} / 1M`,
+      `补全 $${perMillion(t.outputPerMillion)} / 1M × ${perMillion(t.groupRate)} = $${perMillion(detail.breakdown.outputPerMillion)} / 1M`,
+      `提示 ${detail.usage.billablePromptTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.inputPerMillion)}`
+        + ` + 补全 ${detail.usage.completionTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.outputPerMillion)}`
+        + ` = $${detail.breakdown.totalCost.toFixed(6)}`,
+      '本地估算，实际以站点扣费为准',
+    ];
+  }
+
   const lines = [
     `提示价格：${formatPerMillionPrice(detail.breakdown.inputPerMillion)}`,
     `补全价格：${formatPerMillionPrice(detail.breakdown.outputPerMillion)}`,
@@ -369,13 +396,13 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
 
   if (detail.usage.cacheReadTokens > 0) {
     lines.push(
-      `缓存价格：${formatPerMillionPrice(detail.breakdown.cacheReadPerMillion)} (缓存倍率: ${formatCompactNumber(detail.pricing.cacheRatio)})`,
+      `缓存价格：${formatPerMillionPrice(detail.breakdown.cacheReadPerMillion)} (缓存倍率: ${detail.pricing ? formatCompactNumber(detail.pricing.cacheRatio) : '-'})`,
     );
   }
 
   if (detail.usage.cacheCreationTokens > 0) {
     lines.push(
-      `缓存创建价格：${formatPerMillionPrice(detail.breakdown.cacheCreationPerMillion)} (缓存创建倍率: ${formatCompactNumber(detail.pricing.cacheCreationRatio)})`,
+      `缓存创建价格：${formatPerMillionPrice(detail.breakdown.cacheCreationPerMillion)} (缓存创建倍率: ${detail.pricing ? formatCompactNumber(detail.pricing.cacheCreationRatio) : '-'})`,
     );
   }
 
