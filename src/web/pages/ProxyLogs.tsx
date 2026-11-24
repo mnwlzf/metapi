@@ -1798,7 +1798,9 @@ export default function ProxyLogs() {
                                 {line}
                               </span>
                             ))}
-                            <span>{tr('仅供参考，以实际扣费为准')}</span>
+                            {detailLog.billingDetails?.basis !== 'upstream-quota' && (
+                              <span>{tr('仅供参考，以实际扣费为准')}</span>
+                            )}
                           </div>
                         ) : (
                           <div className="mobile-billing-lines">
@@ -2441,11 +2443,13 @@ export default function ProxyLogs() {
                                           </span>
                                         ),
                                       )}
-                                      <span
-                                        style={{
-                                          color: 'var(--color-text-muted)',
-                                        }}
-                                      >{tr('仅供参考，以实际扣费为准')}</span>
+                                      {detailLog.billingDetails?.basis !== 'upstream-quota' && (
+                                        <span
+                                          style={{
+                                            color: 'var(--color-text-muted)',
+                                          }}
+                                        >{tr('仅供参考，以实际扣费为准')}</span>
+                                      )}
                                     </div>
                                   ) : (
                                     <span>

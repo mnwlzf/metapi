@@ -272,10 +272,40 @@ export function formatPerMillionPrice(value: number) {
   return `$${formatCompactNumber(value)} / 1M tokens`;
 }
 
+/**
+ * One-line billing summary for the collapsed log row.
+ *
+ * Two bases exist and they must not be mixed up in copy:
+ * - `upstream-quota`: the amount IS what the upstream charged (its own usage log
+ *   carries a quota). The local price model is a cross-check, not the truth.
+ * - `new-api-ratio`: the amount is this instance's estimate from the upstream's
+ *   ratio table.
+ *
+ * sub2api publishes per-token prices with a group multiplier, not new-api
+ * ratios, so an estimate computed from the ratio table can be far off; say so
+ * instead of letting a reader assume the ratio text is authoritative.
+ */
 export function formatBillingDetailSummary(log: ProxyLogRenderItem) {
   const detail = log.billingDetails;
   if (!detail) return null;
-  return `模型倍率 ${formatCompactNumber(detail.pricing.modelRatio)}，输出倍率 ${formatCompactNumber(detail.pricing.completionRatio)}，缓存倍率 ${formatCompactNumber(detail.pricing.cacheRatio)}，缓存创建倍率 ${formatCompactNumber(detail.pricing.cacheCreationRatio)}，分组倍率 ${formatCompactNumber(detail.pricing.groupRatio)}`;
+
+  const basis = detail.basis ?? 'new-api-ratio';
+  const computed = typeof detail.computedTotalCost === 'number'
+    ? detail.computedTotalCost
+    : detail.breakdown.totalCost;
+  const sub2api = detail.platform === 'sub2api';
+
+  if (basis === 'upstream-quota' && detail.quota?.applied) {
+    const parts = [`实际扣费 $${detail.quota.amount.toFixed(6)}（站点账本）`];
+    if (Math.abs(computed - detail.quota.amount) > 1e-9) {
+      parts.push(`本地推演 $${computed.toFixed(6)}`);
+    }
+    if (sub2api) parts.push('sub2api 按站点单价 × 分组倍率结算');
+    return parts.join('，');
+  }
+
+  const ratioText = `模型倍率 ${formatCompactNumber(detail.pricing.modelRatio)}，输出倍率 ${formatCompactNumber(detail.pricing.completionRatio)}，缓存倍率 ${formatCompactNumber(detail.pricing.cacheRatio)}，缓存创建倍率 ${formatCompactNumber(detail.pricing.cacheCreationRatio)}，分组倍率 ${formatCompactNumber(detail.pricing.groupRatio)}`;
+  return `${ratioText}（本地估算${sub2api ? '，sub2api 站点口径不同，仅供参考' : ''}）`;
 }
 
 export function formatProxyLogUsageSource(
@@ -308,6 +338,29 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
   const detail = log.billingDetails;
   if (!detail) return [];
   if (detail.usage.totalTokens <= 0) return [];
+
+  // Upstream-quota basis: the charge came from the site's own ledger. Show that
+  // first, then the local estimate as a clearly-labelled cross-check — printing
+  // the ratio arithmetic as "how it was billed" is what misled operators.
+  if (detail.basis === 'upstream-quota' && detail.quota?.applied) {
+    const actual = detail.quota.amount;
+    const computed = typeof detail.computedTotalCost === 'number'
+      ? detail.computedTotalCost
+      : detail.breakdown.totalCost;
+    const unitPrice = (actual / Math.max(1, detail.usage.totalTokens)) * 1_000_000;
+    const lines = [
+      `站点实收：$${actual.toFixed(6)}（来自站点用量日志，已按站点分组倍率结算）`,
+      `折算单价：约 $${formatCompactNumber(unitPrice)} / 1M tokens（按本次实际 tokens）`,
+    ];
+    if (Math.abs(computed - actual) > 1e-9) {
+      lines.push(
+        detail.platform === 'sub2api'
+          ? `本地推演：$${computed.toFixed(6)}（sub2api 按站点单价 × 分组倍率计价，本地倍率表口径不同，仅供参考）`
+          : `本地推演：$${computed.toFixed(6)}（仅供参考，实际以站点扣费为准）`,
+      );
+    }
+    return lines;
+  }
 
   const lines = [
     `提示价格：${formatPerMillionPrice(detail.breakdown.inputPerMillion)}`,
@@ -346,6 +399,11 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
     `补全 ${detail.usage.completionTokens.toLocaleString()} tokens / 1M tokens * $${formatCompactNumber(detail.breakdown.outputPerMillion)} = $${detail.breakdown.totalCost.toFixed(6)}`,
   );
   lines.push(parts.join(' + '));
+  lines.push(
+    detail.platform === 'sub2api'
+      ? '本地估算：sub2api 站点按站点单价 × 分组倍率计费，上表为本地倍率推演，实际以站点扣费为准'
+      : '本地估算，实际以站点扣费为准',
+  );
 
   return lines;
 }

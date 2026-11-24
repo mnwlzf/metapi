@@ -63,6 +63,13 @@ describe('resolveProxyLogBilling', () => {
 
     expect(result.estimatedCost).toBe(0.011132);
     expect(result.billingDetails?.breakdown.totalCost).toBe(0.011132);
+    // No quota was reported → the recorded amount is this instance's estimate.
+    expect(result.billingDetails).toMatchObject({
+      basis: 'new-api-ratio',
+      platform: 'new-api',
+      computedTotalCost: 0.011132,
+    });
+    expect(result.billingDetails?.quota).toBeUndefined();
   });
 
   it('uses self-log billing metadata for detail breakdown while preserving quota-derived total cost', async () => {
@@ -140,6 +147,10 @@ describe('resolveProxyLogBilling', () => {
     }));
     expect(result.estimatedCost).toBe(0.083056);
     expect(result.billingDetails).toMatchObject({
+      basis: 'upstream-quota',
+      platform: 'new-api',
+      computedTotalCost: 0.083057,
+      quota: { amount: 0.083056, applied: true },
       usage: {
         cacheReadTokens: 145692,
         cacheCreationTokens: 945,
@@ -159,6 +170,58 @@ describe('resolveProxyLogBilling', () => {
         cacheCreationPerMillion: 6.25,
         totalCost: 0.083057,
       },
+    });
+  });
+
+  it('records the upstream quota as the basis for sub2api and keeps the local estimate beside it', async () => {
+    // sub2api bills per-token × group multiplier, so the local new-api-style
+    // ratio estimate is a different price basis. The recorded amount must be the
+    // upstream's quota, and the mismatch must stay visible in the detail row.
+    estimateProxyCostMock.mockResolvedValue(0.000091);
+    buildProxyBillingDetailsMock.mockResolvedValue({
+      usage: {
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        billablePromptTokens: 31,
+      },
+      pricing: { modelRatio: 0.33, completionRatio: 3, cacheRatio: 0.0333, cacheCreationRatio: 1, groupRatio: 1 },
+      breakdown: {
+        inputPerMillion: 0.66,
+        outputPerMillion: 1.98,
+        cacheReadPerMillion: 0.022,
+        cacheCreationPerMillion: 0.66,
+        totalCost: 0.000091,
+      },
+    });
+
+    const result = await resolveProxyLogBilling({
+      site: { id: 2, url: 'https://sub.sailapi.top', platform: 'sub2api' },
+      account: { id: 2 },
+      modelName: 'deepseek-v4-pro',
+      parsedUsage: {
+        promptTokens: 31,
+        completionTokens: 36,
+        totalTokens: 67,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        promptTokensIncludeCache: true,
+      },
+      resolvedUsage: {
+        promptTokens: 31,
+        completionTokens: 36,
+        totalTokens: 67,
+        recoveredFromSelfLog: true,
+        estimatedCostFromQuota: 0.00015,
+        selfLogBillingMeta: null,
+      },
+    });
+
+    expect(result.estimatedCost).toBe(0.00015);
+    expect(result.billingDetails).toMatchObject({
+      basis: 'upstream-quota',
+      platform: 'sub2api',
+      computedTotalCost: 0.000091,
+      quota: { amount: 0.00015, applied: true },
     });
   });
 });

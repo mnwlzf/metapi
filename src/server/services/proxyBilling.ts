@@ -87,11 +87,25 @@ export async function resolveProxyLogBilling(
     estimatedCost = billingDetails!.breakdown.totalCost;
   }
 
-  if (
-    input.resolvedUsage.estimatedCostFromQuota > 0
-    && (input.resolvedUsage.recoveredFromSelfLog || estimatedCost <= 0)
-  ) {
-    estimatedCost = input.resolvedUsage.estimatedCostFromQuota;
+  // Snapshot what the local price model produced BEFORE any quota override, so
+  // the detail view can show "estimate vs actual" instead of presenting one as
+  // the other. `localAmount` is also the exact predicate the override uses.
+  const localAmount = estimatedCost;
+  const computedTotalCost = billingDetails?.breakdown.totalCost ?? localAmount;
+  const quotaAmount = input.resolvedUsage.estimatedCostFromQuota;
+  const quotaApplied = quotaAmount > 0
+    && (input.resolvedUsage.recoveredFromSelfLog || localAmount <= 0);
+  if (quotaApplied) {
+    estimatedCost = quotaAmount;
+  }
+
+  if (billingDetails) {
+    billingDetails.computedTotalCost = computedTotalCost;
+    billingDetails.platform = String(input.site.platform || '') || undefined;
+    billingDetails.basis = quotaApplied ? 'upstream-quota' : 'new-api-ratio';
+    if (quotaAmount > 0) {
+      billingDetails.quota = { amount: quotaAmount, applied: quotaApplied };
+    }
   }
 
   return {

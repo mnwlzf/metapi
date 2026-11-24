@@ -379,7 +379,17 @@ export type ProxyLogStatusFilter = 'all' | 'success' | 'failed';
 export type ProxyLogClientConfidence = 'exact' | 'heuristic' | 'user_agent' | 'unknown' | null;
 export type ProxyLogUsageSource = 'upstream' | 'self-log' | 'unknown' | null;
 
+export type ProxyLogBillingBasis = 'new-api-ratio' | 'upstream-quota';
+
 export type ProxyLogBillingDetails = {
+  /** Absent on rows written before the basis was recorded: treat as 'new-api-ratio'. */
+  basis?: ProxyLogBillingBasis;
+  /** Site platform that served the request ('sub2api' bills from its own ledger). */
+  platform?: string;
+  /** What this instance's price model computed, even when a quota overrode it. */
+  computedTotalCost?: number;
+  /** The upstream's own charge, when its usage log reported one. */
+  quota?: { amount: number; applied: boolean };
   quotaType: number;
   usage: {
     promptTokens: number;

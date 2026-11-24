@@ -125,7 +125,22 @@ interface ModelPricingCatalog {
   groupRatio: Record<string, number>;
 }
 
+export type ProxyBillingBasis = 'new-api-ratio' | 'upstream-quota';
+
 export interface ProxyBillingDetails {
+  /**
+   * Where the recorded amount came from. `upstream-quota` means the amount is
+   * the upstream's own charge (its usage log carries a quota); `new-api-ratio`
+   * means it is this instance's price-model estimate. Rows written before this
+   * field existed have none and must be read as `new-api-ratio`.
+   */
+  basis?: ProxyBillingBasis;
+  /** Platform of the site that served the request, so the UI can explain the basis. */
+  platform?: string;
+  /** What the local price model computed, persisted even when a quota overrode it. */
+  computedTotalCost?: number;
+  /** Upstream's own charge, when its usage log reported one. */
+  quota?: { amount: number; applied: boolean };
   quotaType: number;
   usage: {
     promptTokens: number;
