@@ -80,6 +80,23 @@ export interface SiteAnnouncement {
   rawPayload?: unknown;
 }
 
+export interface UserGroupInfo {
+  /**
+   * Upstream identifier for the group. sub2api keys are bound by numeric group
+   * id, so the id is what token create/update payloads must carry. Null when
+   * the platform only exposes group names.
+   */
+  id: string | null;
+  name: string;
+  /** Lifecycle flag as reported upstream; 'unknown' when the platform omits it. */
+  status: 'active' | 'inactive' | 'unknown';
+  /**
+   * Display multiplier for the group (sub2api `rate_multiplier`, new-api
+   * `group_ratio`), null when upstream does not publish one.
+   */
+  rateMultiplier: number | null;
+}
+
 export interface CreateApiTokenOptions {
   name?: string;
   group?: string;
@@ -120,6 +137,12 @@ export interface PlatformAdapter {
   issueManagementToken?(baseUrl: string, sessionCredential: string, platformUserId?: number): Promise<string | null>;
   getSiteAnnouncements(baseUrl: string, accessToken: string, platformUserId?: number): Promise<SiteAnnouncement[]>;
   getUserGroups(baseUrl: string, accessToken: string, platformUserId?: number): Promise<string[]>;
+  /**
+   * Group metadata for UI display (name / status / multiplier). Optional so a
+   * platform that only knows group keys keeps working: callers fall back to
+   * `getUserGroups()` and render the raw key.
+   */
+  getUserGroupCatalog?(baseUrl: string, accessToken: string, platformUserId?: number): Promise<UserGroupInfo[]>;
   createApiToken(baseUrl: string, accessToken: string, platformUserId?: number, options?: CreateApiTokenOptions): Promise<boolean>;
   deleteApiToken(baseUrl: string, accessToken: string, tokenKey: string, platformUserId?: number): Promise<DeleteApiTokenResult>;
 }
@@ -229,6 +252,25 @@ export abstract class BasePlatformAdapter implements PlatformAdapter {
     _platformUserId?: number,
   ): Promise<string[]> {
     return ['default'];
+  }
+
+  /**
+   * Default catalog: promote whatever `getUserGroups()` returns into display
+   * entries. Status and multiplier stay unknown until an adapter overrides this
+   * with real upstream metadata — a key is never invented as a name.
+   */
+  async getUserGroupCatalog(
+    baseUrl: string,
+    accessToken: string,
+    platformUserId?: number,
+  ): Promise<UserGroupInfo[]> {
+    const groups = await this.getUserGroups(baseUrl, accessToken, platformUserId);
+    return groups.map((group) => ({
+      id: null,
+      name: String(group || '').trim(),
+      status: 'unknown' as const,
+      rateMultiplier: null,
+    })).filter((group) => group.name.length > 0);
   }
 
   async deleteApiToken(

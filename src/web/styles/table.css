@@ -831,15 +831,62 @@ body.site-drag-active * {
 
 .token-table th:nth-child(4),
 .token-table td:nth-child(4),
-.token-table th:nth-child(5),
-.token-table td:nth-child(5),
 .token-table th:nth-child(6),
 .token-table td:nth-child(6),
 .token-table th:nth-child(7),
 .token-table td:nth-child(7),
 .token-table th:nth-child(8),
 .token-table td:nth-child(8) {
-  width: 8%;
+  width: 7%;
+}
+
+/*
+ * Group column: upstream names ("满血不降智gpt-官key(无惧官方路由)") are long, so
+ * it gets its own width and the cell keeps name + multiplier + status on ONE
+ * line. Without the nowrap/ellipsis pair the name wrapped to a second line and
+ * the multiplier badge dropped to a third, which made row heights jump.
+ */
+.token-table th:nth-child(5),
+.token-table td:nth-child(5) {
+  width: 15%;
+  text-align: left;
+}
+
+.token-group-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.token-group-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+
+.token-group-rate {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-text-muted) 28%, transparent);
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-group-status {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 
 .token-table-actions-col,

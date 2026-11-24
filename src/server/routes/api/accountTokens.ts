@@ -1,4 +1,4 @@
-﻿import { FastifyInstance } from 'fastify';
+import { FastifyInstance } from 'fastify';
 import { and, eq, inArray, ne } from 'drizzle-orm';
 import { db, schema } from '../../db/index.js';
 import { insertAndGetById } from '../../db/insertHelpers.js';
@@ -21,6 +21,10 @@ import { getCredentialModeFromExtraConfig, getProxyUrlFromExtraConfig, resolvePl
 import { formatUtcSqlDateTime } from '../../services/localTimeService.js';
 import { startBackgroundTask } from '../../services/backgroundTaskService.js';
 import { withAccountProxyOverride } from '../../services/siteProxy.js';
+import {
+  loadAccountGroupCatalog,
+  resolveTokenGroupDisplay,
+} from '../../services/accountGroupCatalogService.js';
 import { type ModelRefreshResult } from '../../services/modelService.js';
 import {
   type CoverageBatchRebuildResult,
@@ -127,6 +131,41 @@ function isApiKeyConnection(account: typeof schema.accounts.$inferSelect): boole
   const explicit = getCredentialModeFromExtraConfig(account.extraConfig);
   if (explicit && explicit !== 'auto') return explicit === 'apikey';
   return !(account.accessToken || '').trim();
+}
+
+/**
+ * Tokens persist the upstream group key (a numeric id on sub2api). Resolve it
+ * against the account's group catalog so the list can show a name, the group's
+ * status and its multiplier instead of a bare key. Unknown keys stay as-is.
+ */
+async function attachTokenGroupDisplay<
+  T extends { accountId?: number | null; tokenGroup?: string | null },
+>(tokens: T[]) {
+  const accountIds = Array.from(new Set(
+    tokens
+      .map((token) => Number(token.accountId))
+      .filter((id) => Number.isFinite(id) && id > 0),
+  ));
+  if (accountIds.length === 0) return tokens;
+
+  const catalogs = new Map<number, Awaited<ReturnType<typeof loadAccountGroupCatalog>>>();
+  await Promise.all(accountIds.map(async (id) => {
+    catalogs.set(id, await loadAccountGroupCatalog(id));
+  }));
+
+  return tokens.map((token) => {
+    const catalog = catalogs.get(Number(token.accountId)) || [];
+    const display = resolveTokenGroupDisplay(catalog, token.tokenGroup);
+    return {
+      ...token,
+      // null means "not found in the upstream catalog"; the client renders the
+      // raw key then, so a stale group is visible as an unresolved id instead
+      // of silently looking like a name.
+      groupName: display.name,
+      groupStatus: display.status,
+      groupRateMultiplier: display.rateMultiplier,
+    };
+  });
 }
 
 function asTrimmedString(value: unknown): string | undefined {
@@ -492,7 +531,8 @@ function buildCoverageRefreshFailureItem(
 export async function accountTokensRoutes(app: FastifyInstance) {
   app.get<{ Querystring: { accountId?: string } }>('/api/account-tokens', async (request) => {
     const accountId = request.query.accountId ? Number.parseInt(request.query.accountId, 10) : undefined;
-    return listTokensWithRelations(Number.isFinite(accountId as number) ? accountId : undefined);
+    const tokens = await listTokensWithRelations(Number.isFinite(accountId as number) ? accountId : undefined);
+    return await attachTokenGroupDisplay(tokens);
   });
 
   app.post<{ Body: unknown }>('/api/account-tokens', async (request, reply) => {
@@ -1029,12 +1069,28 @@ export async function accountTokensRoutes(app: FastifyInstance) {
 
     try {
       const platformUserId = resolvePlatformUserId(account.extraConfig, account.username);
-      const groups = await withAccountProxyOverride(
-        getProxyUrlFromExtraConfig(account.extraConfig),
-        () => adapter.getUserGroups(site.url, account.accessToken, platformUserId),
-      );
+      const catalog = await loadAccountGroupCatalog(accountId);
+      // Prefer the cached catalog; it carries the display metadata the caller
+      // needs. Fall back to the raw group keys when the adapter has none, which
+      // is also the path that surfaces "session expired" as a real error.
+      let groups = catalog.map((group) => group.id || group.name).filter(Boolean);
+      if (groups.length === 0) {
+        groups = await withAccountProxyOverride(
+          getProxyUrlFromExtraConfig(account.extraConfig),
+          () => adapter.getUserGroups(site.url, account.accessToken, platformUserId),
+        );
+      }
       const normalized = Array.from(new Set((groups || []).map((item) => String(item || '').trim()).filter(Boolean)));
-      return { success: true, groups: normalized.length > 0 ? normalized : ['default'] };
+      return {
+        success: true,
+        groups: normalized.length > 0 ? normalized : ['default'],
+        groupDetails: catalog.map((group) => ({
+          id: group.id,
+          name: group.name,
+          status: group.status,
+          rateMultiplier: group.rateMultiplier,
+        })),
+      };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       return reply.code(502).send({

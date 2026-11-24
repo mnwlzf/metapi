@@ -8,6 +8,7 @@ import {
   SubscriptionSummary,
   type DeleteApiTokenResult,
   type SiteAnnouncement,
+  type UserGroupInfo,
   UserInfo,
 } from './base.js';
 import { withSiteProxyRequestInit } from '../siteProxy.js';
@@ -16,6 +17,10 @@ import { stripTrailingSlashes } from '../urlNormalization.js';
 function normalizeBaseUrl(baseUrl: string): string {
   return stripTrailingSlashes(baseUrl || '');
 }
+
+/** Group catalog paging: 50 rows per request, with a hard page cap. */
+const SUB2API_GROUP_CATALOG_PAGE_SIZE = 50;
+const SUB2API_GROUP_CATALOG_MAX_PAGES = 20;
 
 /**
  * Sub2API adapter.
@@ -290,7 +295,35 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     return items;
   }
 
-  private parseGroupItems(payload: any): string[] {
+  private parseGroupStatus(raw: unknown): UserGroupInfo['status'] {
+    if (typeof raw === 'boolean') return raw ? 'active' : 'inactive';
+    if (typeof raw === 'number') {
+      if (raw === 1) return 'active';
+      if (raw === 0) return 'inactive';
+      return 'unknown';
+    }
+    if (typeof raw !== 'string') return 'unknown';
+    const normalized = raw.trim().toLowerCase();
+    if (['active', 'enabled', 'enable', 'on', 'normal', '1', 'true'].includes(normalized)) return 'active';
+    if (['inactive', 'disabled', 'disable', 'off', 'deleted', 'archived', '0', 'false'].includes(normalized)) return 'inactive';
+    return 'unknown';
+  }
+
+  private parseGroupRate(raw: unknown): number | null {
+    const parsed = typeof raw === 'number' ? raw : Number.parseFloat(String(raw ?? '').trim());
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  /**
+   * Parse a group catalog payload into display entries.
+   *
+   * `/api/v1/groups/available` answers with the full objects we need
+   * (`id` / `name` / `status` / `rate_multiplier`); the older `group_id`-only
+   * shapes are still accepted so the fallback endpoints keep working. The
+   * previous parser kept only keys, which is why the UI showed bare group ids
+   * and had no status or multiplier to render.
+   */
+  private parseGroupCatalog(payload: any): UserGroupInfo[] {
     const source = payload?.data ?? payload;
     const rawItems = (() => {
       if (Array.isArray(source)) return source;
@@ -298,94 +331,81 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
       if (Array.isArray(source?.list)) return source.list;
       if (Array.isArray(source?.groups)) return source.groups;
       if (Array.isArray(source?.data)) return source.data;
+      if (source && typeof source === 'object') {
+        // name -> info maps (new-api style) stay tolerated.
+        return Object.entries(source as Record<string, unknown>).map(([name, value]) => (
+          value && typeof value === 'object'
+            ? { name, ...(value as Record<string, unknown>) }
+            : { name, rate_multiplier: value }
+        ));
+      }
       return [];
     })();
 
-    const groups: string[] = [];
+    const catalog: UserGroupInfo[] = [];
+    const seen = new Set<string>();
+
     for (const item of rawItems) {
       if (item == null) continue;
-      if (typeof item === 'number' && Number.isFinite(item) && item > 0) {
-        groups.push(String(Math.trunc(item)));
-        continue;
-      }
-      if (typeof item === 'string') {
-        const normalized = item.trim();
-        if (normalized) groups.push(normalized);
-        continue;
-      }
-      if (typeof item !== 'object') continue;
 
-      const numericCandidates = [
-        (item as any).group_id,
-        (item as any).groupId,
-        (item as any).id,
-        (item as any).value,
-      ];
-      let picked = '';
-      for (const candidate of numericCandidates) {
-        const parsed = Number.parseInt(String(candidate), 10);
+      if (typeof item === 'string' || typeof item === 'number') {
+        const name = String(item).trim();
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        catalog.push({ id: null, name, status: 'unknown', rateMultiplier: null });
+        continue;
+      }
+
+      if (typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+
+      let id: string | null = null;
+      for (const candidate of [record.group_id, record.groupId, record.id, record.value]) {
+        const parsed = Number.parseInt(String(candidate ?? ''), 10);
         if (Number.isFinite(parsed) && parsed > 0) {
-          picked = String(parsed);
+          id = String(parsed);
           break;
         }
       }
-      if (picked) {
-        groups.push(picked);
-        continue;
-      }
 
-      const textCandidates = [
-        (item as any).name,
-        (item as any).group_name,
-        (item as any).groupName,
-        (item as any).title,
-        (item as any).label,
-        (item as any).code,
-      ];
-      for (const candidate of textCandidates) {
+      let name = '';
+      for (const candidate of [record.name, record.group_name, record.groupName, record.title, record.label, record.code]) {
         if (typeof candidate !== 'string') continue;
         const normalized = candidate.trim();
         if (!normalized) continue;
-        groups.push(normalized);
+        name = normalized;
         break;
       }
+      if (!name) name = id || '';
+      if (!name) continue;
+
+      const key = id ? `id:${id}` : `name:${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const status = this.parseGroupStatus(
+        record.status ?? record.state ?? record.enabled ?? record.is_active ?? record.isActive,
+      );
+      const rateMultiplier = this.parseGroupRate(
+        record.rate_multiplier
+        ?? record.rateMultiplier
+        ?? record.group_ratio
+        ?? record.ratio
+        ?? record.rate
+        ?? record.multiplier,
+      );
+
+      catalog.push({ id, name, status, rateMultiplier });
     }
 
-    return Array.from(new Set(groups));
+    return catalog;
   }
 
   private async listGroups(baseUrl: string, accessToken: string): Promise<string[]> {
-    const endpoints = [
-      '/api/v1/groups/available',
-      '/api/v1/groups?page=1&page_size=100',
-      '/api/v1/groups',
-      '/api/v1/group?page=1&page_size=100',
-      '/api/v1/group',
-    ];
-
-    const headers = this.buildAuthHeader(accessToken);
-    for (const endpoint of endpoints) {
-      try {
-        const res = await this.fetchJson<any>(`${baseUrl}${endpoint}`, {
-          headers,
-        });
-        const parsed = (() => {
-          try {
-            return this.parseSub2ApiEnvelope<any>(res, endpoint);
-          } catch {
-            return res;
-          }
-        })();
-        const groups = this.parseGroupItems(parsed);
-        if (groups.length > 0) return groups;
-      } catch {}
-    }
-
-    // Every credential/endpoint variant failed: leave a trace instead of a bare
-    // null, otherwise the caller only sees "nothing worked".
-    console.warn('[sub2api] listGroups: all variants failed');
-    return [];
+    const catalog = await this.getUserGroupCatalog(baseUrl, accessToken);
+    return Array.from(new Set(catalog.map((group) => group.id || group.name).filter(Boolean)));
   }
+
 
   private parseGroupIdsFromTokenPayload(payload: any): string[] {
     const source = payload?.data ?? payload;
@@ -826,6 +846,87 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     if (inferredFromKeys.length > 0) return inferredFromKeys;
 
     return ['default'];
+  }
+
+  override async getUserGroupCatalog(baseUrl: string, accessToken: string): Promise<UserGroupInfo[]> {
+    const normalizedBase = normalizeBaseUrl(baseUrl);
+    // Query strings are added by the pager, so endpoints stay path-only.
+    const endpoints = ['/api/v1/groups/available', '/api/v1/groups', '/api/v1/group'];
+
+    for (const endpoint of endpoints) {
+      try {
+        const catalog = await this.fetchGroupCatalogPaged(normalizedBase, accessToken, endpoint);
+        if (catalog.length > 0) return catalog;
+      } catch {
+        // Unsupported/absent endpoint: try the next variant.
+      }
+    }
+
+    // Fallback: the key list only carries `group_id`, so the id doubles as the
+    // display name rather than leaving the UI blank.
+    const inferredIds = await this.inferGroupsFromKeys(normalizedBase, accessToken);
+    if (inferredIds.length > 0) {
+      return inferredIds.map((id) => ({ id, name: id, status: 'unknown' as const, rateMultiplier: null }));
+    }
+
+    console.warn('[sub2api] getUserGroupCatalog: all variants failed');
+    return [];
+  }
+
+  /**
+   * Walk a group catalog endpoint page by page (50 rows each) until upstream
+   * stops returning rows.
+   *
+   * Two stop guards are needed: a page shorter than the requested size is the
+   * last page, and a page that adds no new group means the endpoint ignored the
+   * paging parameters (sub2api's `/api/v1/groups/available` answers with the
+   * whole list on every page), so continuing would refetch identical rows
+   * forever.
+   */
+  private async fetchGroupCatalogPaged(
+    baseUrl: string,
+    accessToken: string,
+    endpoint: string,
+  ): Promise<UserGroupInfo[]> {
+    const collected: UserGroupInfo[] = [];
+    const seen = new Set<string>();
+
+    for (let page = 1; page <= SUB2API_GROUP_CATALOG_MAX_PAGES; page += 1) {
+      const items = await this.fetchGroupCatalogPage(baseUrl, accessToken, endpoint, page);
+      if (items.length === 0) break;
+
+      let added = 0;
+      for (const item of items) {
+        const key = item.id ? `id:${item.id}` : `name:${item.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        collected.push(item);
+        added += 1;
+      }
+
+      if (items.length < SUB2API_GROUP_CATALOG_PAGE_SIZE || added === 0) break;
+    }
+
+    return collected;
+  }
+
+  private async fetchGroupCatalogPage(
+    baseUrl: string,
+    accessToken: string,
+    endpoint: string,
+    page: number,
+  ): Promise<UserGroupInfo[]> {
+    const separator = endpoint.includes('?') ? '&' : '?';
+    const url = `${baseUrl}${endpoint}${separator}page=${page}&page_size=${SUB2API_GROUP_CATALOG_PAGE_SIZE}`;
+    const res = await this.fetchJson<any>(url, { headers: this.buildAuthHeader(accessToken) });
+    const parsed = (() => {
+      try {
+        return this.parseSub2ApiEnvelope<any>(res, endpoint);
+      } catch {
+        return res;
+      }
+    })();
+    return this.parseGroupCatalog(parsed);
   }
 
   override async createApiToken(

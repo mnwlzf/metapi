@@ -549,7 +549,7 @@ describe('Sub2ApiAdapter', () => {
 
   it('fetches user groups from /api/v1/groups', async () => {
     await startServer((req, res) => {
-      if (req.url === '/api/v1/groups?page=1&page_size=100') {
+      if (req.url?.startsWith('/api/v1/groups?')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           code: 0,
@@ -572,7 +572,7 @@ describe('Sub2ApiAdapter', () => {
 
   it('fetches user groups from /api/v1/groups/available', async () => {
     await startServer((req, res) => {
-      if (req.url === '/api/v1/groups/available') {
+      if (req.url?.startsWith('/api/v1/groups/available')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           code: 0,
@@ -589,6 +589,104 @@ describe('Sub2ApiAdapter', () => {
 
     const groups = await adapter.getUserGroups(baseUrl, 'jwt-token');
     expect(groups).toEqual(['5', '6']);
+  });
+
+  it('reads group name, status and multiplier from /api/v1/groups/available', async () => {
+    await startServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/groups/available')) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          code: 0,
+          message: 'success',
+          data: [
+            { id: 295, name: '福利pro不降智', status: 'active', rate_multiplier: 0.1 },
+            { id: 320, name: '已停用分组', status: 'inactive', rate_multiplier: 1 },
+          ],
+        }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
+    expect(catalog).toEqual([
+      { id: '295', name: '福利pro不降智', status: 'active', rateMultiplier: 0.1 },
+      { id: '320', name: '已停用分组', status: 'inactive', rateMultiplier: 1 },
+    ]);
+  });
+
+  it('pages the group catalog in batches of 50 until a page comes back empty', async () => {
+    const requested: string[] = [];
+    await startServer((req, res) => {
+      const url = req.url || '';
+      if (!url.startsWith('/api/v1/groups/available')) {
+        res.writeHead(404).end();
+        return;
+      }
+      requested.push(url);
+      const parsed = new URL(url, 'http://127.0.0.1');
+      const page = Number(parsed.searchParams.get('page') || '1');
+      const pageSize = Number(parsed.searchParams.get('page_size') || '0');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (page > 2) {
+        res.end(JSON.stringify({ code: 0, message: 'success', data: [] }));
+        return;
+      }
+      const items = Array.from({ length: pageSize }, (_, index) => {
+        const id = (page - 1) * pageSize + index + 1;
+        return { id, name: `g-${id}`, status: 'active', rate_multiplier: 1 };
+      });
+      res.end(JSON.stringify({ code: 0, message: 'success', data: items }));
+    });
+
+    const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
+    expect(catalog).toHaveLength(100);
+    expect(requested).toEqual([
+      '/api/v1/groups/available?page=1&page_size=50',
+      '/api/v1/groups/available?page=2&page_size=50',
+      '/api/v1/groups/available?page=3&page_size=50',
+    ]);
+    expect(catalog[0]).toMatchObject({ id: '1', name: 'g-1' });
+    expect(catalog[catalog.length - 1]).toMatchObject({ id: '100', name: 'g-100' });
+  });
+
+  it('stops after one request when the endpoint ignores paging parameters', async () => {
+    let calls = 0;
+    await startServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/groups/available')) {
+        calls += 1;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 0, message: 'success', data: [{ id: 1, name: 'default' }] }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
+    expect(catalog).toEqual([{ id: '1', name: 'default', status: 'unknown', rateMultiplier: null }]);
+    expect(calls).toBe(1);
+  });
+
+  it('keeps the group id as display name when only key payloads are available', async () => {
+    await startServer((req, res) => {
+      if (req.url?.startsWith('/api/v1/group')) {
+        res.writeHead(404).end();
+        return;
+      }
+      if (req.url === '/api/v1/keys?page=1&page_size=100') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          code: 0,
+          message: 'success',
+          data: { items: [{ id: 11, key: 'sk-1', group_id: 42, status: 'active' }] },
+        }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
+    expect(catalog).toEqual([{ id: '42', name: '42', status: 'unknown', rateMultiplier: null }]);
   });
 
   it('falls back to infer groups from /api/v1/keys when group endpoint is unavailable', async () => {

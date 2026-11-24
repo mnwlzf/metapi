@@ -101,6 +101,25 @@ const isAccountSyncable = (account: any) =>
   && account?.status === 'active'
   && account?.site?.status !== 'disabled';
 
+/**
+ * Account that can *create* a token: it only needs a session credential and an
+ * enabled site. Status is deliberately not part of this test — an `expired`
+ * account still holds a working access token (only the refresh token is gone),
+ * and the server-side create path accepts it. Filtering those accounts out left
+ * the "所属账号" picker empty with no explanation.
+ */
+const isSessionTokenAccount = (account: any) =>
+  resolveAccountCredentialMode(account) === 'session'
+  && account?.site?.status !== 'disabled';
+
+const accountStatusSuffix = (account: any): string => {
+  const status = String(account?.status || '').trim().toLowerCase();
+  if (!status || status === 'active') return '';
+  if (status === 'expired') return ` · ${tr('会话已过期')}`;
+  if (status === 'disabled') return ` · ${tr('已禁用')}`;
+  return ` · ${status}`;
+};
+
 const resolveSyncStatus = (result: AccountTokenSyncResult | null | undefined): SyncStatus => {
   const raw = String(result?.status || '').toLowerCase();
   if (raw === 'failed' || raw === 'error') return 'failed';
@@ -117,6 +136,104 @@ const resolveSyncMessage = (result: AccountTokenSyncResult | null | undefined, f
 };
 
 const isMaskedPendingToken = (token: any): boolean => token?.valueStatus === 'masked_pending';
+
+/**
+ * Upstream group metadata. Tokens persist only the group key (a numeric id on
+ * sub2api), so the name/status/multiplier shown in the UI come from the
+ * account's group catalog returned alongside `/api/account-tokens/groups/:id`.
+ */
+type TokenGroupDetail = {
+  id: string | null;
+  name: string;
+  status: string;
+  rateMultiplier: number | null;
+};
+
+const parseGroupDetails = (res: any): TokenGroupDetail[] => (
+  Array.isArray(res?.groupDetails)
+    ? res.groupDetails
+      .map((item: any): TokenGroupDetail => ({
+        id: item?.id != null && String(item.id).trim() !== '' ? String(item.id).trim() : null,
+        name: String(item?.name || '').trim(),
+        status: typeof item?.status === 'string' ? item.status : 'unknown',
+        rateMultiplier: typeof item?.rateMultiplier === 'number' && Number.isFinite(item.rateMultiplier)
+          ? item.rateMultiplier
+          : null,
+      }))
+      .filter((item: TokenGroupDetail) => item.name.length > 0)
+    : []
+);
+
+const findGroupDetail = (catalog: TokenGroupDetail[], value: string): TokenGroupDetail | undefined => {
+  const key = String(value || '').trim();
+  if (!key) return undefined;
+  return catalog.find((item) => (item.id || item.name) === key) || catalog.find((item) => item.name === key);
+};
+
+const formatGroupRate = (value: number): string => (
+  Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
+);
+
+const buildGroupOptionLabel = (detail: TokenGroupDetail | undefined, fallback: string): string => {
+  if (!detail) return fallback;
+  const parts = [detail.name];
+  if (typeof detail.rateMultiplier === 'number') parts.push(`×${formatGroupRate(detail.rateMultiplier)}`);
+  if (detail.status === 'inactive') parts.push(tr('不可用'));
+  return parts.join(' · ');
+};
+
+/** Plain-text group description for the mobile card (no badges there). */
+const formatTokenGroupText = (token: any): string => {
+  const key = String(token?.tokenGroup || '').trim();
+  const name = String(token?.groupName || (key ? `#${key}` : 'default'));
+  const status = String(token?.groupStatus || '');
+  const rate = typeof token?.groupRateMultiplier === 'number' ? token.groupRateMultiplier : null;
+  const parts = [name];
+  if (rate != null) parts.push(`×${formatGroupRate(rate)}`);
+  if (status === 'inactive') parts.push(tr('不可用'));
+  if (status === 'removed') parts.push(tr('已删除'));
+  return parts.join(' · ');
+};
+
+/**
+ * Table cell: group name + multiplier badge + availability warning.
+ *
+ * The name is single-line and ellipsised: upstream group names are long and
+ * used to wrap into a second line with the multiplier badge stranded below it,
+ * which made every row height jump. The full name (plus the raw key) stays in
+ * the tooltip.
+ *
+ * `groupStatus === 'removed'` means upstream's group list no longer contains the
+ * stored key — the group was deleted or taken offline, so the token's own state
+ * says nothing about whether it can still serve traffic.
+ */
+function TokenGroupCell({ token }: { token: any }) {
+  const key = String(token?.tokenGroup || '').trim();
+  // groupName is null when upstream did not return the key in its catalog; show
+  // the raw id so a stale group is obvious rather than silently renamed.
+  const name = String(token?.groupName || (key ? `#${key}` : 'default'));
+  const status = String(token?.groupStatus || '');
+  const rate = typeof token?.groupRateMultiplier === 'number' ? token.groupRateMultiplier : null;
+  const tooltip = key && key !== name ? `${name}（${key}）` : name;
+  return (
+    <span className="token-group-cell">
+      <span className="token-group-name" title={tooltip}>{name}</span>
+      {rate != null ? (
+        <span className="token-group-rate" title={tr('分组倍率')}>{`×${formatGroupRate(rate)}`}</span>
+      ) : null}
+      {status === 'inactive' ? (
+        <span className="token-group-status">
+          <StatusPill tone="warning" style={{ fontSize: 10 }}>{tr('不可用')}</StatusPill>
+        </span>
+      ) : null}
+      {status === 'removed' ? (
+        <span className="token-group-status" title={tr('上游分组列表中已没有该分组（已删除或已下架）')}>
+          <StatusPill tone="danger" style={{ fontSize: 10 }}>{tr('已删除')}</StatusPill>
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
 const isMaskedPendingSyncResult = (result: AccountTokenSyncResult | null | undefined) =>
   String(result?.reason || '').trim().toLowerCase() === 'upstream_masked_tokens'
@@ -178,8 +295,10 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     isDefault: false,
   });
   const [groupOptions, setGroupOptions] = useState<string[]>(['default']);
+  const [groupCatalog, setGroupCatalog] = useState<TokenGroupDetail[]>([]);
   const [groupLoading, setGroupLoading] = useState(false);
   const [editGroupOptions, setEditGroupOptions] = useState<string[]>(['default']);
+  const [editGroupCatalog, setEditGroupCatalog] = useState<TokenGroupDetail[]>([]);
   const [editGroupLoading, setEditGroupLoading] = useState(false);
   const rowRefs = useRef<Map<number, HTMLTableRowElement>>(new Map());
   const tokensTableRef = useRef<HTMLTableElement | null>(null);
@@ -263,6 +382,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
         const normalized = Array.from(new Set(groups));
         const nextOptions = normalized.length > 0 ? normalized : ['default'];
         setGroupOptions(nextOptions);
+        setGroupCatalog(parseGroupDetails(res));
         setForm((prev) => {
           if (nextOptions.includes(prev.group)) return prev;
           return { ...prev, group: nextOptions[0] };
@@ -271,6 +391,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
       .catch((error: any) => {
         if (cancelled) return;
         setGroupOptions(['default']);
+        setGroupCatalog([]);
         setForm((prev) => ({ ...prev, group: 'default' }));
         toast.error(error?.message || tr('拉取分组失败，已回退 default'));
       })
@@ -301,6 +422,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
           ? res.groups.map((item: any) => String(item || '').trim()).filter(Boolean)
           : [];
         const normalized = Array.from(new Set(groups));
+        setEditGroupCatalog(parseGroupDetails(res));
         setEditGroupOptions((_current) => {
           const next = normalized.length > 0 ? normalized : ['default'];
           if (next.includes(currentGroup)) return next;
@@ -309,6 +431,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
       })
       .catch((error: any) => {
         if (cancelled) return;
+        setEditGroupCatalog([]);
         setEditGroupOptions((current) => (current.includes(currentGroup) ? current : [...current, currentGroup]));
         toast.error(error?.message || tr('拉取分组失败，已保留当前分组'));
       })
@@ -360,6 +483,24 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     })
   ), [activeAccounts]);
 
+  /** Accounts offered when creating a token (session credential, site enabled). */
+  const sessionAccounts = useMemo(() => accounts.filter(isSessionTokenAccount), [accounts]);
+  const sessionAccountSelectOptions = useMemo(() => (
+    sessionAccounts.map((account) => {
+      const accountName = account.username || `account-${account.id}`;
+      const siteName = account.site?.name || '-';
+      return {
+        value: String(account.id),
+        label: `${accountName} @ ${siteName}${accountStatusSuffix(account)}`,
+        description: siteName,
+      };
+    })
+  ), [sessionAccounts]);
+  const selectedCreateAccount = useMemo(
+    () => sessionAccounts.find((account) => account.id === form.accountId) || null,
+    [form.accountId, sessionAccounts],
+  );
+
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const shouldOpenCreate = isTruthyFlag(params.get('create'));
@@ -367,8 +508,9 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     const requestedModel = (params.get('model') || '').trim();
     if (!shouldOpenCreate || !requestedAccountId) return;
 
-    const preferredAccount = activeAccounts.find((account) => account.id === requestedAccountId);
-    const fallbackAccount = preferredAccount || activeAccounts[0] || null;
+    const preferredAccount = sessionAccounts.find((account) => account.id === requestedAccountId)
+      || activeAccounts.find((account) => account.id === requestedAccountId);
+    const fallbackAccount = preferredAccount || activeAccounts[0] || sessionAccounts[0] || null;
     if (!fallbackAccount) return;
 
     setShowAdd(true);
@@ -396,7 +538,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
       },
       { replace: true },
     );
-  }, [activeAccounts, location.pathname, location.search, navigate, toast]);
+  }, [activeAccounts, sessionAccounts, location.pathname, location.search, navigate, toast]);
 
   useEffect(() => {
     const focusTokenId = readFocusTokenId(location.search);
@@ -791,12 +933,20 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
   }, [activeAccounts, load, toast]);
 
   const handleToggleAdd = useCallback(() => {
-    setShowAdd((prev) => {
-      const nextOpen = !prev;
-      if (!nextOpen) setCreateHintModelName('');
-      return nextOpen;
+    const nextOpen = !showAdd;
+    setShowAdd(nextOpen);
+    if (!nextOpen) {
+      setCreateHintModelName('');
+      return;
+    }
+    // Preselect an account: the group picker only loads once an account is
+    // chosen, so an empty selection also left "分组" with nothing to pick.
+    setForm((current) => {
+      if (current.accountId) return current;
+      const preferred = activeAccounts[0] || sessionAccounts[0];
+      return preferred ? { ...current, accountId: preferred.id } : current;
     });
-  }, []);
+  }, [activeAccounts, sessionAccounts, showAdd]);
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -854,6 +1004,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
           <button
             onClick={handleSyncSite}
             disabled={syncingAll || activeAccounts.length === 0}
+            title={activeAccounts.length === 0 ? tr('没有可用的会话账号（账号会话已过期或被禁用）') : undefined}
             className="btn btn-ghost"
             style={{ border: '1px solid var(--color-border)', padding: '8px 14px' }}
           >
@@ -862,7 +1013,10 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
         </>
       ) : (
         <>
-          <div style={{ minWidth: 220, position: 'relative', zIndex: 20 }}>
+          <div
+            style={{ minWidth: 220, position: 'relative', zIndex: 20 }}
+            title={activeAccounts.length === 0 ? tr('没有可用的会话账号（账号会话已过期或被禁用）') : undefined}
+          >
             <ModernSelect
               size="sm"
               value={String(syncingAccountId || 0)}
@@ -940,6 +1094,9 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                 searchable
                 searchPlaceholder={ACCOUNT_SELECT_SEARCH_PLACEHOLDER}
               />
+              {activeAccounts.length === 0 ? (
+                <div className="info-tip">{tr('没有可用的会话账号（账号会话已过期或被禁用），无法同步站点令牌。')}</div>
+              ) : null}
             </div>
             <button
               onClick={handleSync}
@@ -1033,7 +1190,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                     onChange={(nextValue) => setEditForm((prev) => ({ ...prev, group: nextValue || 'default' }))}
                     options={(editGroupOptions.length > 0 ? editGroupOptions : ['default']).map((group) => ({
                       value: group,
-                      label: group,
+                      label: buildGroupOptionLabel(findGroupDetail(editGroupCatalog, group), group),
                     }))}
                     placeholder={editGroupLoading ? tr('分组加载中...') : tr('选择分组')}
                     disabled={editGroupLoading}
@@ -1111,12 +1268,22 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
               }}
               options={[
                 { value: '0', label: tr('选择账号') },
-                ...activeAccountSelectOptions,
+                ...sessionAccountSelectOptions,
               ]}
               placeholder={tr('选择账号')}
               searchable
               searchPlaceholder={ACCOUNT_SELECT_SEARCH_PLACEHOLDER}
             />
+            {sessionAccounts.length === 0 ? (
+              <div className="info-tip" style={{ marginTop: 8 }}>
+                {tr('该站点下没有可用的会话账号：请先在「账号管理」添加账号或重新登录，再创建令牌。')}
+              </div>
+            ) : selectedCreateAccount
+              && String(selectedCreateAccount.status || '').trim().toLowerCase() !== 'active' ? (
+                <div className="info-tip" style={{ marginTop: 8, color: 'var(--color-warning)' }}>
+                  {tr('该账号会话已过期：仍可用现有访问令牌创建，但失败时请先在账号管理重新登录。')}
+                </div>
+              ) : null}
           </div>
           {createHintModelName ? (
             <div
@@ -1147,7 +1314,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
               onChange={(nextValue) => setForm((prev) => ({ ...prev, group: nextValue }))}
               options={(groupOptions.length > 0 ? groupOptions : ['default']).map((group) => ({
                 value: group,
-                label: group,
+                label: buildGroupOptionLabel(findGroupDetail(groupCatalog, group), group),
               }))}
               placeholder={groupLoading ? tr('分组加载中...') : tr('选择分组')}
               disabled={!form.accountId || groupLoading}
@@ -1249,7 +1416,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                     )}
                   >
                     <MobileField label={tr('账号')} value={token.account?.username || `account-${token.accountId}`} />
-                    <MobileField label={tr('分组')} value={token.tokenGroup || 'default'} />
+                    <MobileField label={tr('分组')} value={formatTokenGroupText(token)} />
                     <MobileField
                       label={tr('状态')}
                       value={(
@@ -1386,7 +1553,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                       )}
                     </td>
                     <td>{token.account?.username || `account-${token.accountId}`}</td>
-                    <td>{token.tokenGroup || 'default'}</td>
+                    <td><TokenGroupCell token={token} /></td>
                     <td>
                       {isPending ? (
                         <StatusPill tone="warning" style={{ fontSize: 11 }}>{tr('待补全')}</StatusPill>
