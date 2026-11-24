@@ -84,6 +84,7 @@ export type DownstreamApiKeyPolicyView = {
   enabled: boolean;
   expiresAt: string | null;
   maxCost: number | null;
+  maxUpstreamRate: number | null;
   usedCost: number;
   maxRequests: number | null;
   usedRequests: number;
@@ -274,6 +275,18 @@ export function normalizeSiteWeightMultipliersInput(input: unknown): Record<numb
   return result;
 }
 
+/**
+ * Upper bound on the upstream group consumption multiplier. `null`/empty means
+ * "no bound"; `0` is kept as a real bound (only 0x/free groups may be used) so
+ * the value round-trips exactly as the operator typed it.
+ */
+export function normalizeMaxUpstreamRateInput(input: unknown): number | null {
+  if (input === null || input === undefined || input === '') return null;
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0) return null;
+  return value;
+}
+
 export function normalizeAllowedSiteIdsInput(input: unknown): number[] {
   const rawValues = Array.isArray(input)
     ? input
@@ -432,6 +445,7 @@ export function toDownstreamApiKeyPolicyView(row: DownstreamApiKeyRow): Downstre
     enabled: !!row.enabled,
     expiresAt: row.expiresAt || null,
     maxCost: row.maxCost ?? null,
+    maxUpstreamRate: row.maxUpstreamRate ?? null,
     usedCost: Number(row.usedCost || 0),
     maxRequests: row.maxRequests ?? null,
     maxRpm: row.maxRpm ?? null,
@@ -455,7 +469,7 @@ export function toDownstreamApiKeyPolicyView(row: DownstreamApiKeyRow): Downstre
   };
 }
 
-export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'supportedModels' | 'modelMappings' | 'allowedRouteIds' | 'siteWeightMultipliers' | 'allowedSiteIds' | 'allowedCredentialRefs'>): DownstreamRoutingPolicy {
+export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'supportedModels' | 'modelMappings' | 'allowedRouteIds' | 'siteWeightMultipliers' | 'allowedSiteIds' | 'allowedCredentialRefs' | 'maxUpstreamRate'>): DownstreamRoutingPolicy {
   return {
     supportedModels: normalizeSupportedModelsInput(view.supportedModels),
     modelMappings: normalizeModelMappingsInput(view.modelMappings),
@@ -463,6 +477,7 @@ export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'support
     siteWeightMultipliers: normalizeSiteWeightMultipliersInput(view.siteWeightMultipliers),
     allowedSiteIds: normalizeAllowedSiteIdsInput(view.allowedSiteIds),
     allowedCredentialRefs: normalizeAllowedCredentialRefsInput(view.allowedCredentialRefs),
+    maxUpstreamRate: normalizeMaxUpstreamRateInput(view.maxUpstreamRate),
     denyAllWhenEmpty: false,
   };
 }
@@ -736,6 +751,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
   enabled?: unknown;
   expiresAt?: unknown;
   maxCost?: unknown;
+  maxUpstreamRate?: unknown;
   maxRequests?: unknown;
   maxRpm?: unknown;
   maxInflight?: unknown;
@@ -771,6 +787,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
   }
 
   const maxCost = normalizePositiveNumberOrNull(input.maxCost);
+  const maxUpstreamRate = normalizeMaxUpstreamRateInput(input.maxUpstreamRate);
   const maxRequests = normalizePositiveIntegerOrNull(input.maxRequests);
   const maxRpm = normalizePositiveIntegerOrNull(input.maxRpm);
   const maxInflight = normalizePositiveIntegerOrNull(input.maxInflight);
@@ -797,6 +814,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
     enabled,
     expiresAt,
     maxCost,
+    maxUpstreamRate,
     maxRequests,
     maxRpm,
     maxInflight,

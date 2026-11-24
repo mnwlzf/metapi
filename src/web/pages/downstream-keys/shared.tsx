@@ -14,6 +14,7 @@ export type SummaryItem = {
   tags: string[];
   expiresAt: string | null;
   maxCost: number | null;
+  maxUpstreamRate?: number | null;
   usedCost: number;
   maxRequests: number | null;
   usedRequests: number;

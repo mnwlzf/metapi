@@ -351,6 +351,13 @@
       "when": 1794291589390,
       "tag": "0050_proxy_log_response_model",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "6",
+      "when": 1795478400000,
+      "tag": "0051_downstream_api_key_max_upstream_rate",
+      "breakpoints": true
     }
   ]
 }

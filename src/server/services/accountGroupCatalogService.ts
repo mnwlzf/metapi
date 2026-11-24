@@ -37,6 +37,7 @@ const catalogInflight = new Map<number, Promise<UserGroupInfo[]>>();
 export function __resetAccountGroupCatalogCacheForTests(): void {
   catalogCache.clear();
   catalogInflight.clear();
+  catalogWarmupAttempts.clear();
 }
 
 function withTimeout<T>(task: Promise<T>, timeoutMs: number): Promise<T> {
@@ -116,8 +117,40 @@ export async function loadAccountGroupCatalog(accountId: number): Promise<UserGr
   return task;
 }
 
-export type TokenGroupStatus = 'active' | 'inactive' | 'removed' | 'unknown';
+/**
+ * Read the catalog without waiting on the network.
+ *
+ * Routing runs synchronously, so an eligibility rule that depends on a group's
+ * rate multiplier can only consult what is already cached. null means "we do
+ * not know yet" — deliberately distinct from an empty catalog, which is a real
+ * (if useless) answer.
+ */
+export function peekAccountGroupCatalog(accountId: number): UserGroupInfo[] | null {
+  const cached = catalogCache.get(accountId);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) return null;
+  return cached.catalog;
+}
 
+const CATALOG_WARMUP_RETRY_MS = 60 * 1000;
+const catalogWarmupAttempts = new Map<number, number>();
+
+/**
+ * Populate the cache in the background after a routing pass found it empty.
+ * Failures are not cached by `loadAccountGroupCatalog`, so without a retry
+ * window every request would fire its own management call.
+ */
+export function requestAccountGroupCatalogWarmup(accountId: number): void {
+  if (!Number.isFinite(accountId) || accountId <= 0) return;
+  if (peekAccountGroupCatalog(accountId)) return;
+  const now = Date.now();
+  const lastAttempt = catalogWarmupAttempts.get(accountId) ?? 0;
+  if (now - lastAttempt < CATALOG_WARMUP_RETRY_MS) return;
+  catalogWarmupAttempts.set(accountId, now);
+  void loadAccountGroupCatalog(accountId).catch(() => {});
+}
+
+export type TokenGroupStatus = 'active' | 'inactive' | 'removed' | 'unknown';
 export type TokenGroupDisplay = {
   /** Human-readable group name; null when the key could not be resolved. */
   name: string | null;

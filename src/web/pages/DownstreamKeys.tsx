@@ -46,6 +46,7 @@ type DownstreamApiKeyItem = {
   expiresAt: string | null;
   sensitiveWordDetection?: boolean | null;
   maxCost: number | null;
+  maxUpstreamRate?: number | null;
   usedCost: number;
   maxRequests: number | null;
   maxRpm?: number | null;
@@ -320,6 +321,7 @@ function buildEditorForm(
     groupName: item?.groupName || '',
     tags: normalizeTags(Array.isArray(item?.tags) ? item!.tags : []),
     maxCost: item?.maxCost === null || item?.maxCost === undefined ? '' : String(item.maxCost),
+    maxUpstreamRate: item?.maxUpstreamRate === null || item?.maxUpstreamRate === undefined ? '' : String(item.maxUpstreamRate),
     maxRequests: item?.maxRequests === null || item?.maxRequests === undefined ? '' : String(item.maxRequests),
     maxRpm: item?.maxRpm === null || item?.maxRpm === undefined ? '' : String(item.maxRpm),
     maxInflight: item?.maxInflight === null || item?.maxInflight === undefined ? '' : String(item.maxInflight),
@@ -362,6 +364,11 @@ function summarizeSiteWeightMultipliers(weights: Record<number, number> | undefi
   if (entries.length === 0) return tr('默认倍率');
   if (entries.length === 1) return `${entries[0][0]} => ${entries[0][1]}`;
   return `${entries[0][0]} => ${entries[0][1]} +${entries.length - 1}`;
+}
+
+function formatUpstreamRateLimit(limit: number | null | undefined): string {
+  if (limit === null || limit === undefined || !Number.isFinite(limit)) return tr('不限');
+  return `≤ ${limit}`;
 }
 
 function summarizeTags(tags: string[]): string {
@@ -618,6 +625,7 @@ export default function DownstreamKeys() {
         enabled: raw?.enabled ?? item.enabled,
         expiresAt: raw?.expiresAt ?? item.expiresAt,
         maxCost: raw?.maxCost ?? item.maxCost,
+        maxUpstreamRate: raw?.maxUpstreamRate ?? item.maxUpstreamRate ?? null,
         maxRpm: raw?.maxRpm ?? item.maxRpm ?? null,
         maxInflight: raw?.maxInflight ?? item.maxInflight ?? null,
         usedCost: raw?.usedCost ?? item.usedCost,
@@ -806,6 +814,17 @@ export default function DownstreamKeys() {
       }
     }
 
+    const rawMaxUpstreamRate = editorForm.maxUpstreamRate.trim();
+    let parsedMaxUpstreamRate: number | null = null;
+    if (rawMaxUpstreamRate) {
+      const rate = Number(rawMaxUpstreamRate);
+      if (!Number.isFinite(rate) || rate < 0) {
+        toast.info(tr('上游倍率上限必须是不小于 0 的数字'));
+        return;
+      }
+      parsedMaxUpstreamRate = rate;
+    }
+
     setSaving(true);
     try {
       const payload = {
@@ -820,6 +839,7 @@ export default function DownstreamKeys() {
           : editorForm.sensitiveWordDetection === 'on',
         expiresAt: editorForm.expiresAt ? new Date(editorForm.expiresAt).toISOString() : null,
         maxCost: editorForm.maxCost.trim() ? Number(editorForm.maxCost.trim()) : null,
+        maxUpstreamRate: parsedMaxUpstreamRate,
         maxRequests: editorForm.maxRequests.trim() ? Number(editorForm.maxRequests.trim()) : null,
         maxRpm: editorForm.maxRpm.trim() ? Number(editorForm.maxRpm.trim()) : null,
         maxInflight: editorForm.maxInflight.trim() ? Number(editorForm.maxInflight.trim()) : null,
@@ -1178,7 +1198,8 @@ export default function DownstreamKeys() {
                   <MobileField label={tr('标签')} value={summarizeTags(row.tags || [])} stacked />
                   <MobileField label={tr('模型')} value={summarizeModelLimit(row.supportedModels || [])} stacked />
                   <MobileField label={tr('群组')} value={summarizeRouteLimit(row.allowedRouteIds || [], routeMap)} stacked />
-                  <MobileField label={tr('倍率')} value={summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})} stacked />
+                  <MobileField label={tr('站点权重倍率')} value={summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})} stacked />
+                  <MobileField label={tr('上游倍率上限')} value={formatUpstreamRateLimit(row.maxUpstreamRate)} stacked />
                   <MobileField label={tr('额度')} value={[row.maxRequests == null ? tr('不限') : row.maxRequests.toLocaleString(), row.maxRpm ? `${row.maxRpm} RPM` : null, row.maxDailyRequests != null ? `${tr('日请求')} ${row.dailyUsedRequests || 0}/${row.maxDailyRequests}` : null, row.maxCost == null ? tr('成本不限') : `${tr('成本')} ${formatMoney(row.maxCost)}`].filter(Boolean).join(' / ')} stacked />
                   <MobileField label={tr('用量')} value={`${(row.rangeUsage?.totalRequests || 0).toLocaleString()} ${tr('请求')} · ${formatCompactTokens(row.rangeUsage?.totalTokens || 0)}`} stacked />
                   <MobileField label={tr('最近使用')} value={formatIso(row.lastUsedAt)} stacked />
@@ -1244,7 +1265,8 @@ export default function DownstreamKeys() {
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('模型：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeModelLimit(row.supportedModels || [])}</span></div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('群组：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeRouteLimit(row.allowedRouteIds || [], routeMap)}</span></div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('标签：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeTags(row.tags || [])}</span></div>
-                          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('倍率：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})}</span></div>
+                          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('站点权重倍率：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})}</span></div>
+                          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('倍率上限：')}<span style={{ color: row.maxUpstreamRate == null ? 'var(--color-text-primary)' : 'var(--color-warning)' }}>{formatUpstreamRateLimit(row.maxUpstreamRate)}</span></div>
                         </div>
                       </td>
                       <td style={{ fontVariantNumeric: 'tabular-nums' }}>

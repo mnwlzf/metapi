@@ -30,6 +30,13 @@ export type DownstreamRoutingPolicy = {
   siteWeightMultipliers: Record<number, number>;
   allowedSiteIds: number[];
   allowedCredentialRefs: DownstreamCredentialRef[];
+  /**
+   * Hard ceiling on the upstream group consumption multiplier (上游消耗倍率)
+   * this key may be routed through. null = unset = no ceiling. A key sold at
+   * 0.6x declares 0.6 and can then never be dispatched to a 0.8x group, which
+   * is the difference between a soft preference and a cost guarantee.
+   */
+  maxUpstreamRate: number | null;
   denyAllWhenEmpty?: boolean;
 };
 
@@ -66,4 +73,5 @@ export const EMPTY_DOWNSTREAM_ROUTING_POLICY: DownstreamRoutingPolicy = {
   siteWeightMultipliers: {},
   allowedSiteIds: [],
   allowedCredentialRefs: [],
+  maxUpstreamRate: null,
 };

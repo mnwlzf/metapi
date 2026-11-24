@@ -163,6 +163,40 @@ describe('downstream api keys routes', () => {
     expect(listRes.json()).toMatchObject({ success: true, items: [] });
   });
 
+  it('persists the upstream rate ceiling and keeps it when an update omits it', async () => {
+    const createRes = await app.inject({
+      method: 'POST',
+      url: '/api/downstream-keys',
+      payload: {
+        name: 'capped-key',
+        key: 'sk-capped-key-001',
+        enabled: true,
+        // Sent as a string: the editor keeps every numeric input as text.
+        maxUpstreamRate: '0.6',
+      },
+    });
+
+    expect(createRes.statusCode).toBe(200);
+    const created = createRes.json() as { item: { id: number; maxUpstreamRate: number | null } };
+    expect(created.item.maxUpstreamRate).toBe(0.6);
+
+    const keepRes = await app.inject({
+      method: 'PUT',
+      url: `/api/downstream-keys/${created.item.id}`,
+      payload: { name: 'capped-key-renamed', key: 'sk-capped-key-001' },
+    });
+    expect(keepRes.statusCode).toBe(200);
+    expect((keepRes.json() as { item: { maxUpstreamRate: number | null } }).item.maxUpstreamRate).toBe(0.6);
+
+    const clearRes = await app.inject({
+      method: 'PUT',
+      url: `/api/downstream-keys/${created.item.id}`,
+      payload: { maxUpstreamRate: null },
+    });
+    expect(clearRes.statusCode).toBe(200);
+    expect((clearRes.json() as { item: { maxUpstreamRate: number | null } }).item.maxUpstreamRate).toBeNull();
+  });
+
   it('clears nullable editor fields when updating a downstream api key', async () => {
     const createRes = await app.inject({
       method: 'POST',

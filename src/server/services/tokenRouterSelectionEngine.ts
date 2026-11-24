@@ -30,6 +30,7 @@ import { ConnectivityLookup, ConnectivitySignal, loadConnectivityLookup, resolve
 import { siteProtocolAffinityFactor } from '../shared/siteProtocolProfile.js';
 import { RouteDecisionCandidate, RouteDecisionReasonCode } from '../../shared/tokenRouteContract.js';
 import { resolveEffectiveUnitCost } from './routeStickyPreferencePolicy.js';
+import { evaluateUpstreamRateLimit, type UpstreamGroupRateInput } from './upstreamGroupRateResolver.js';
 import type {
   CandidateEligibilityOptions,
   CandidateEligibilityReason,
@@ -933,6 +934,38 @@ export function resolveDownstreamExclusionReason(
   return 'API Key/令牌未在下游密钥允许列表内';
 }
 
+/**
+ * Rate ceiling owned by the downstream key: a key sold at 0.6x declares 0.6 and
+ * must never be dispatched through a 0.8x upstream group. This is a hard filter,
+ * separate from `siteWeightMultipliers` (a soft probability weight), because a
+ * weight can only make an expensive hop less likely — never impossible.
+ */
+export function resolveUpstreamRateExclusionReason(
+  candidate: RouteChannelCandidate,
+  downstreamPolicy?: DownstreamRoutingPolicy,
+): { message: string; details: Record<string, unknown> } | null {
+  const limit = downstreamPolicy?.maxUpstreamRate ?? null;
+  if (limit === null) return null;
+
+  const verdict = evaluateUpstreamRateLimit({
+    site: {
+      id: candidate.site.id,
+      url: candidate.site.url,
+      platform: candidate.site.platform,
+      apiKey: candidate.site.apiKey,
+    },
+    account: {
+      id: candidate.account.id,
+      accessToken: candidate.account.accessToken,
+      apiToken: candidate.account.apiToken,
+    },
+    token: candidate.token ? { tokenGroup: candidate.token.tokenGroup } : null,
+    channel: { sourceModel: candidate.channel.sourceModel },
+  } satisfies UpstreamGroupRateInput, limit);
+
+  return verdict.allowed ? null : { message: verdict.message, details: verdict.details };
+}
+
 export function getCandidateEligibilityReasons(
   candidate: RouteChannelCandidate,
   options: CandidateEligibilityOptions,
@@ -995,6 +1028,11 @@ export function getCandidateEligibilityReasons(
   const downstreamExclusionReason = resolveDownstreamExclusionReason(candidate, options.downstreamPolicy);
   if (downstreamExclusionReason) {
     addReason('downstream_excluded', downstreamExclusionReason);
+  }
+
+  const upstreamRateExclusion = resolveUpstreamRateExclusionReason(candidate, options.downstreamPolicy);
+  if (upstreamRateExclusion) {
+    addReason('upstream_rate_exceeded', upstreamRateExclusion.message, upstreamRateExclusion.details);
   }
 
   if (excludeChannelIds.includes(candidate.channel.id)) {

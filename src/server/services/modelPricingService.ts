@@ -547,6 +547,49 @@ async function getPricingDataCached(input: EstimateProxyCostInput): Promise<Pric
   return refreshPricingDataCache(input);
 }
 
+/**
+ * Group ratios observed in the cached pricing catalog, keyed exactly as the
+ * upstream publishes them (new-api names its groups, sub2api uses numeric ids).
+ * Returns null when the catalog is absent or too old to trust: callers that
+ * need a hard answer must treat "no entry" as unknown, never as 1x.
+ */
+export function getCachedGroupRate(input: {
+  siteId: number;
+  accountId: number;
+  groupKey: string;
+}): number | null {
+  const groupKey = String(input.groupKey ?? '').trim();
+  if (!groupKey) return null;
+  const cached = routingReferenceCostCache.get(`${input.siteId}:${input.accountId}`);
+  if (!cached) return null;
+  if (Date.now() - cached.fetchedAt >= cached.ttlMs) return null;
+  // Presence, not truthiness: a 0-ratio free group is a real answer.
+  if (!Object.prototype.hasOwnProperty.call(cached.groupRatio, groupKey)) return null;
+  const rate = Number(cached.groupRatio[groupKey]);
+  return Number.isFinite(rate) ? rate : null;
+}
+
+/**
+ * Warm the pricing catalog in the background so the next routing pass can read
+ * a group ratio. Routing decisions are synchronous and cannot await a fetch, so
+ * a cold cache forces the caller to answer "unknown"; without this warm-up a
+ * fail-closed rate guard would reject every request forever while nothing ever
+ * populates the cache.
+ */
+const ROUTING_WARMUP_RETRY_MS = 60 * 1000;
+const routingWarmupAttempts = new Map<string, number>();
+
+export function requestRoutingReferenceCostWarmup(input: EstimateProxyCostInput): void {
+  const key = getCacheKey(input);
+  const cached = routingReferenceCostCache.get(key);
+  if (cached && Date.now() - cached.fetchedAt < cached.ttlMs) return;
+  const now = Date.now();
+  const lastAttempt = routingWarmupAttempts.get(key) ?? 0;
+  if (now - lastAttempt < ROUTING_WARMUP_RETRY_MS) return;
+  routingWarmupAttempts.set(key, now);
+  void refreshPricingDataCache(input).catch(() => {});
+}
+
 export function getCachedModelRoutingReferenceCost(input: {
   siteId: number;
   accountId: number;

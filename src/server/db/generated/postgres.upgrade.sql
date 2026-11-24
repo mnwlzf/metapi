@@ -1,1 +1,1 @@
-ALTER TABLE "proxy_logs" ADD COLUMN "response_model" TEXT;
+ALTER TABLE "downstream_api_keys" ADD COLUMN "max_upstream_rate" DOUBLE PRECISION;

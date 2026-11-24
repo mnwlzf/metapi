@@ -8,6 +8,7 @@ export type RouteDecisionReasonCode =
     | 'account_unavailable'
     | 'site_disabled'
     | 'downstream_excluded'
+    | 'upstream_rate_exceeded'
     | 'already_attempted'
     | 'token_unavailable'
     | 'channel_cooldown'

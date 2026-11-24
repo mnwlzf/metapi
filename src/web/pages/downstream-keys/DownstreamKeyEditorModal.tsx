@@ -25,6 +25,7 @@ export type DownstreamKeyEditorForm = {
   groupName: string;
   tags: string[];
   maxCost: string;
+  maxUpstreamRate: string;
   maxRequests: string;
   maxRpm: string;
   maxInflight: string;
@@ -426,6 +427,18 @@ export default function DownstreamKeyEditorModal({
         <div className="downstream-key-modal-field">
           <div className="downstream-key-modal-label">{tr('成本额度')}</div>
           <input value={form.maxCost} onChange={(e) => onChange((prev) => ({ ...prev, maxCost: e.target.value }))} placeholder={tr('留空表示不限')} style={inputStyle} />
+        </div>
+        <div className="downstream-key-modal-field">
+          <div className="downstream-key-modal-label">{tr('上游倍率上限')}</div>
+          <input
+            value={form.maxUpstreamRate}
+            onChange={(e) => onChange((prev) => ({ ...prev, maxUpstreamRate: e.target.value }))}
+            placeholder={tr('例如：0.6，留空表示不限')}
+            style={inputStyle}
+          />
+          <div className="downstream-key-modal-help">
+            {tr('只允许路由到上游消耗倍率不超过该值的分组；留空不限制。倍率取不到时按保守策略排除。')}
+          </div>
         </div>
         <div className="downstream-key-modal-field">
           <div className="downstream-key-modal-label">{tr('过期时间')}</div>
