@@ -8,6 +8,14 @@ export function resolveLoginErrorMessage(status: number, reason: string): string
   if (status === 403 && normalizedReason.includes('ip not allowed')) {
     return tr('当前 IP 不在管理白名单中');
   }
+  if (status === 429) {
+    // Brute-force throttle: this address burned its failure budget (10 wrong
+    // tokens per 5 minutes), so even the right token is refused until the block
+    // window ends. Saying "check the service" here sends the operator hunting
+    // for a server problem that does not exist. A valid token still succeeds
+    // during the block, because the credential is checked before the budget.
+    return tr('登录尝试过于频繁，请稍后重试（服务本身正常）');
+  }
   if (status === 401 || (status === 403 && normalizedReason.includes('invalid token'))) {
     return tr('登录令牌无效');
   }
