@@ -44,6 +44,10 @@ interface ResolveProxyLogBillingInput {
 
 function toPricingOverride(meta: SelfLogBillingMeta | null): ProxyBillingPricingOverride | null {
   if (!meta) return null;
+  // A meta with `ratiosKnown: false` only carries cache token counts (sub2api
+  // usage rows). Treating its placeholder 1s as a price would silently replace
+  // the platform's own pricing with $2 per million.
+  if (meta.ratiosKnown === false) return null;
   return {
     modelRatio: meta.modelRatio,
     completionRatio: meta.completionRatio,

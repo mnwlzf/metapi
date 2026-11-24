@@ -61,6 +61,12 @@ export interface SelfLogBillingMeta {
   cacheRatio: number;
   cacheCreationRatio: number;
   groupRatio: number;
+  /**
+   * Whether the upstream actually published ratios. sub2api usage rows carry
+   * cache token counts but no ratio table, and a meta with `ratiosKnown: false`
+   * must NOT be used as a pricing override — it only contributes cache tokens.
+   */
+  ratiosKnown?: boolean;
   cacheReadTokens: number;
   cacheCreationTokens: number;
   promptTokensIncludeCache: boolean;
@@ -253,6 +259,48 @@ function mapSelfLogItem(raw: unknown): SelfLogItem | null {
       ?? row.durationMs,
   );
 
+  // sub2api reports cache token counts at the row level (or under `usage`), not
+  // inside the new-api style `other` JSON. Missing them made every cached prompt
+  // token bill at the full input price — measured ~3.5x over the site's charge.
+  const usageNode = row.usage && typeof row.usage === 'object'
+    ? row.usage as Record<string, unknown>
+    : null;
+  const readCount = (...candidates: unknown[]): number => {
+    for (const candidate of candidates) {
+      const value = toPositiveInt(candidate);
+      if (value > 0) return value;
+    }
+    return 0;
+  };
+  const rowCacheReadTokens = readCount(
+    row.cache_read_tokens, row.cacheReadTokens, row.cache_tokens, row.cacheTokens,
+    usageNode?.cache_read_tokens, usageNode?.cacheReadTokens, usageNode?.cache_tokens, usageNode?.cacheTokens,
+  );
+  const rowCacheCreationTokens = readCount(
+    row.cache_creation_tokens, row.cacheCreationTokens, row.create_cache_tokens, row.createCacheTokens,
+    usageNode?.cache_creation_tokens, usageNode?.cacheCreationTokens,
+  );
+  const parsedBillingMeta = parseSelfLogBillingMeta(row.other);
+  const billingMeta = parsedBillingMeta
+    ? {
+        ...parsedBillingMeta,
+        cacheReadTokens: Math.max(parsedBillingMeta.cacheReadTokens, rowCacheReadTokens),
+        cacheCreationTokens: Math.max(parsedBillingMeta.cacheCreationTokens, rowCacheCreationTokens),
+      }
+    : (rowCacheReadTokens > 0 || rowCacheCreationTokens > 0
+        ? {
+            modelRatio: 1,
+            completionRatio: 1,
+            cacheRatio: 1,
+            cacheCreationRatio: 1,
+            groupRatio: 1,
+            ratiosKnown: false,
+            cacheReadTokens: rowCacheReadTokens,
+            cacheCreationTokens: rowCacheCreationTokens,
+            promptTokensIncludeCache: true,
+          }
+        : null);
+
   return {
     modelName,
     tokenName,
@@ -264,7 +312,7 @@ function mapSelfLogItem(raw: unknown): SelfLogItem | null {
     ...(recoveredCost > 0 ? { recoveredCost } : {}),
     createdAtMs,
     requestTimeMs,
-    billingMeta: parseSelfLogBillingMeta(row.other),
+    billingMeta,
   };
 }
 
@@ -282,6 +330,15 @@ function parseSelfLogBillingMeta(rawOther: unknown): SelfLogBillingMeta | null {
 
   if (!payload || typeof payload !== 'object') return null;
   const other = payload as Record<string, unknown>;
+
+  const ratiosKnown = (
+    other.model_ratio !== undefined || other.modelRatio !== undefined
+    || other.completion_ratio !== undefined || other.completionRatio !== undefined
+    || other.cache_ratio !== undefined || other.cacheRatio !== undefined
+    || other.cache_creation_ratio !== undefined || other.cacheCreationRatio !== undefined
+    || other.create_cache_ratio !== undefined || other.createCacheRatio !== undefined
+    || other.group_ratio !== undefined || other.groupRatio !== undefined
+  );
 
   const modelRatio = normalizePositiveRatio(other.model_ratio ?? other.modelRatio, 1);
   const completionRatio = normalizePositiveRatio(
@@ -327,6 +384,7 @@ function parseSelfLogBillingMeta(rawOther: unknown): SelfLogBillingMeta | null {
     cacheRatio,
     cacheCreationRatio,
     groupRatio,
+    ratiosKnown,
     cacheReadTokens,
     cacheCreationTokens,
     promptTokensIncludeCache: true,

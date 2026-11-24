@@ -136,6 +136,54 @@ describe('proxyUsageFallbackService sub2api', () => {
     });
   });
 
+  it('carries row-level cache tokens and never fakes a ratio override for them', async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      code: 0,
+      message: 'success',
+      data: {
+        items: [
+          {
+            id: 2001,
+            model: 'deepseek-v4.1-flash',
+            input_tokens: 1200,
+            output_tokens: 40,
+            cache_creation_tokens: 16,
+            cache_read_tokens: 1100,
+            quota: 27,
+            created_at: '2026-03-07T06:12:30.000Z',
+            api_key: { id: 5, key: 'sk-cache-row', name: 'cache-key' },
+          },
+        ],
+        total: 1,
+        page: 1,
+        page_size: 20,
+        pages: 1,
+      },
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    const result = await resolveProxyUsageWithSelfLogFallback({
+      site: { url: 'https://sub2api.example.com', platform: 'sub2api' },
+      account: { accessToken: 'jwt-access-token', apiToken: 'sk-account-level' },
+      tokenValue: 'sk-cache-row',
+      tokenName: 'cache-key',
+      modelName: 'deepseek-v4.1-flash',
+      requestStartedAtMs: Date.parse('2026-03-07T06:12:07.000Z'),
+      requestEndedAtMs: Date.parse('2026-03-07T06:12:30.000Z'),
+      localLatencyMs: 23000,
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+    });
+
+    // sub2api publishes no ratio table: the meta must only contribute cache
+    // tokens, or billing would replace the platform price with $2 per million.
+    expect(result.recoveredFromSelfLog).toBe(true);
+    expect(result.selfLogBillingMeta?.ratiosKnown).toBe(false);
+    expect(result.selfLogBillingMeta?.cacheReadTokens).toBe(1100);
+    expect(result.selfLogBillingMeta?.cacheCreationTokens).toBe(16);
+  });
+
   it('treats explicit zero upstream usage as upstream instead of unknown', async () => {
     const result = await resolveProxyUsageWithSelfLogFallback({
       site: {

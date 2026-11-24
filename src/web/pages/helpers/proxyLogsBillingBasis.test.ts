@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildBillingProcessLines,
   formatBillingDetailSummary,
+  resolveRateCapDisplay,
   type ProxyLogRenderItem,
 } from './proxyLogsHelpers.js';
 
@@ -155,6 +156,18 @@ describe('billing detail display by basis', () => {
     expect(lines).toContain('提示 $9 / 1M × 0.12 = $1.08 / 1M');
     expect(lines).toContain('补全 $27 / 1M × 0.12 = $3.24 / 1M');
     expect(lines).toContain('= $0.000150');
+  });
+
+  it('summarises the rate check for the list column', () => {
+    expect(resolveRateCapDisplay({ tokenGroupRate: 0.12, downstreamKeyMaxUpstreamRate: 0.3 } as ProxyLogRenderItem))
+      .toEqual({ label: '0.12 / <=0.3', tone: 'ok' });
+    expect(resolveRateCapDisplay({ tokenGroupRate: 0.5, downstreamKeyMaxUpstreamRate: 0.3 } as ProxyLogRenderItem).tone)
+      .toBe('over');
+    expect(resolveRateCapDisplay({ tokenGroupRate: null, downstreamKeyMaxUpstreamRate: 0.3 } as ProxyLogRenderItem).tone)
+      .toBe('unknown');
+    expect(resolveRateCapDisplay({ tokenGroupRate: 0.12, downstreamKeyMaxUpstreamRate: null } as ProxyLogRenderItem))
+      .toEqual({ label: '0.12 / 不限', tone: 'unknown' });
+    expect(resolveRateCapDisplay({} as ProxyLogRenderItem)).toEqual({ label: '--', tone: 'unknown' });
   });
 
   it('returns nothing to render when the row has no billing details', () => {

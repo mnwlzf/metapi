@@ -319,6 +319,24 @@ export function formatBillingDetailSummary(log: ProxyLogRenderItem) {
   return `${ratioText}（本地估算${sub2api ? '，sub2api 站点口径不同，仅供参考' : ''}）`;
 }
 
+/**
+ * Rate-vs-ceiling cell for the log list: the multiplier the request's token
+ * group actually carries, and the key's configured ceiling, in one glanceable
+ * value with a tone so an over-ceiling hop is visible without opening the row.
+ */
+export function resolveRateCapDisplay(log: ProxyLogRenderItem): {
+  label: string;
+  tone: 'ok' | 'over' | 'unknown';
+} {
+  const rate = typeof log.tokenGroupRate === 'number' ? log.tokenGroupRate : null;
+  const cap = typeof log.downstreamKeyMaxUpstreamRate === 'number' ? log.downstreamKeyMaxUpstreamRate : null;
+  if (rate === null && cap === null) return { label: '--', tone: 'unknown' };
+  const rateText = rate === null ? '?' : formatCompactNumber(rate);
+  const capText = cap === null ? tr('不限') : `<=${formatCompactNumber(cap)}`;
+  const tone = rate === null || cap === null ? 'unknown' : (rate <= cap ? 'ok' : 'over');
+  return { label: `${rateText} / ${capText}`, tone };
+}
+
 export function formatProxyLogUsageSource(
   source: ProxyLogUsageSource | undefined,
 ): string | null {
@@ -374,19 +392,28 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
   }
 
   // sub2api native basis: prices are absolute per token, the discount is the
-  // group multiplier. Print exactly that, so the arithmetic matches the charge.
+  // group multiplier. Print exactly that, so the arithmetic matches the charge,
+  // and list the token classes actually billed — a mismatch with the site's
+  // ledger almost always comes from which class the tokens were charged in.
   if (detail.basis === 'sub2api-per-token' && detail.perToken) {
     const t = detail.perToken;
     const perMillion = (value: number) => formatCompactNumber(value);
-    return [
+    const lines = [
       `计价口径：sub2api 站点单价 × 分组倍率（${perMillion(t.groupRate)}）`,
       `提示 $${perMillion(t.inputPerMillion)} / 1M × ${perMillion(t.groupRate)} = $${perMillion(detail.breakdown.inputPerMillion)} / 1M`,
       `补全 $${perMillion(t.outputPerMillion)} / 1M × ${perMillion(t.groupRate)} = $${perMillion(detail.breakdown.outputPerMillion)} / 1M`,
+    ];
+    if (detail.usage.cacheReadTokens > 0) {
+      lines.push(`缓存读取 $${perMillion(t.cacheReadPerMillion)} / 1M × ${perMillion(t.groupRate)} = $${perMillion(detail.breakdown.cacheReadPerMillion)} / 1M`);
+    }
+    lines.push(
+      `计费 tokens：提示 ${detail.usage.billablePromptTokens.toLocaleString()}（其中缓存命中 ${detail.usage.cacheReadTokens.toLocaleString()}、缓存写入 ${detail.usage.cacheCreationTokens.toLocaleString()}）/ 补全 ${detail.usage.completionTokens.toLocaleString()}`,
       `提示 ${detail.usage.billablePromptTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.inputPerMillion)}`
         + ` + 补全 ${detail.usage.completionTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.outputPerMillion)}`
         + ` = $${detail.breakdown.totalCost.toFixed(6)}`,
       '本地估算，实际以站点扣费为准',
-    ];
+    );
+    return lines;
   }
 
   const lines = [

@@ -29,7 +29,7 @@ import PageJumpInput from '../components/PageJumpInput.js';
 import PaginationControls from '../components/PaginationControls.js';
 import ListPage from '../components/ListPage.js';
 import { parseProxyLogPathMeta } from './helpers/proxyLogPathMeta.js';
-import {DEFAULT_PROXY_DEBUG_SETTINGS, DEBUG_REFRESH_INTERVAL_MS, DEBUG_TRACE_PAGE_SIZE, EMPTY_SUMMARY, TRACE_TABLE_LIMIT, formatCompactNumber, buildBillingProcessLines, buildProxyDebugSettingsPayload, buildProxyLogsRouteSearch, firstByteColor, formatBillingDetailSummary, formatFirstByteLabel, formatLatency, formatProxyDebugCaptureSummary, formatProxyDebugTargetSummary, formatProxyLogTokenValue, formatProxyLogUsageSource, formatStreamModeLabel, formatTokensPerSecond, latencyColor, normalizeProxyDebugSettings, parseStoredDebugPreview, persistDebugTracePanelExpanded, readProxyLogsRouteState, readStoredDebugTracePanelExpanded, renderDownstreamKeySummary, proxyLogKeyChipColors, resolveProxyLogClientDisplay, proxyLogRetryColor, resolveProxyLogInputTokens, toApiTimeBoundary, formatProxyLogTokenPair, type ProxyDebugSettingsState, type ProxyLogRenderItem} from './helpers/proxyLogsHelpers.js';
+import {DEFAULT_PROXY_DEBUG_SETTINGS, DEBUG_REFRESH_INTERVAL_MS, DEBUG_TRACE_PAGE_SIZE, EMPTY_SUMMARY, TRACE_TABLE_LIMIT, formatCompactNumber, buildBillingProcessLines, buildProxyDebugSettingsPayload, buildProxyLogsRouteSearch, firstByteColor, formatBillingDetailSummary, formatFirstByteLabel, formatLatency, formatProxyDebugCaptureSummary, formatProxyDebugTargetSummary, formatProxyLogTokenValue, formatProxyLogUsageSource, formatStreamModeLabel, formatTokensPerSecond, latencyColor, normalizeProxyDebugSettings, parseStoredDebugPreview, persistDebugTracePanelExpanded, readProxyLogsRouteState, readStoredDebugTracePanelExpanded, renderDownstreamKeySummary, proxyLogKeyChipColors, resolveProxyLogClientDisplay, proxyLogRetryColor, resolveProxyLogInputTokens, resolveRateCapDisplay, toApiTimeBoundary, formatProxyLogTokenPair, type ProxyDebugSettingsState, type ProxyLogRenderItem} from './helpers/proxyLogsHelpers.js';
 import {CompactSummaryMetric, copyTextToClipboard, renderProxyLogClientCell, ProxyLogTimingCell, StreamModeIcon} from './helpers/proxyLogsUi.js';
 import {
   renderTraceStatusBadge,
@@ -1801,6 +1801,17 @@ export default function ProxyLogs() {
                           ? tr('不限')
                           : formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}
                       />
+                      <MobileField
+                        label={tr('倍率判定')}
+                        value={(() => {
+                          const rateCap = resolveRateCapDisplay(detailLog);
+                          return rateCap.tone === 'over'
+                            ? tr('超出上限')
+                            : rateCap.tone === 'ok'
+                              ? tr('在范围内')
+                              : tr('未知');
+                        })()}
+                      />
                       <div className="mobile-billing-block">
                         <div className="mobile-field-label" style={{ marginBottom: 2 }}>{tr('计费过程')}</div>
                         {billingProcessLines.length > 0 ? (
@@ -1845,6 +1856,7 @@ export default function ProxyLogs() {
                 <th>{tr('密钥')}</th>
                 <th>{tr('模型')}</th>
                 <th>{tr('站点')}</th>
+                <th title={tr('账号分组倍率 / 密钥倍率上限')}>{tr('倍率')}</th>
                 <th>{tr('推理强度')}</th>
                 <th style={{ width: 48, minWidth: 48 }} title={tr('流式 / 非流')}>
                   {tr('模式')}
@@ -2033,6 +2045,25 @@ export default function ProxyLogs() {
                           tone="primary"
                           badgeStyle={{ fontSize: 12 }}
                         />
+                      </td>
+                      <td>
+                        {(() => {
+                          const rateCap = resolveRateCapDisplay(detailLog);
+                          const badgeClass = rateCap.tone === 'ok'
+                            ? 'badge badge-success'
+                            : rateCap.tone === 'over'
+                              ? 'badge badge-danger'
+                              : 'badge badge-muted';
+                          return (
+                            <span
+                              className={badgeClass}
+                              style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums' }}
+                              title={tr('账号分组倍率 / 密钥倍率上限')}
+                            >
+                              {rateCap.label}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td
                         style={{
