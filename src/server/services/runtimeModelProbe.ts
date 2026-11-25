@@ -104,11 +104,33 @@ function isLikelyConversationModel(modelName: string): boolean {
  */
 const DEFINITE_UNSUPPORTED_STATUSES = new Set([400, 403, 404, 422, 500, 502, 503, 504]);
 
+/**
+ * Wording that denies *this request permission* — as opposed to wording that
+ * says the credential itself is bad.
+ *
+ * `401` is deliberately not in the definite set: a relay answers 401 for an
+ * expired session or a rotated key, and turning that into a disable verdict
+ * would sweep every model of the site at once. It becomes a verdict only when
+ * the body says "no permission" rather than "not authorized" / "invalid token",
+ * which is why 未授权 / unauthorized are excluded here even though the broader
+ * pattern set accepts them for real 4xx model rejections.
+ */
+const PERMISSION_DENIED_ONLY_PATTERNS = [
+  /无权限|没有权限|无权访问|权限不足/,
+  /model[^]{0,80}(access denied|permission denied|forbidden|not allowed)/i,
+  /(^|[\s"{:,])(?:permission denied|access denied|forbidden|no permission|not allowed)(?:[\s"}.,:]|$)/i,
+];
+
 export function classifyUnsupportedFailure(status: number, rawErrorText: string): boolean {
-  if (!DEFINITE_UNSUPPORTED_STATUSES.has(status)) return false;
   const normalized = String(rawErrorText || '').trim();
   if (!normalized) return false;
-  return DEFINITE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(normalized));
+  if (DEFINITE_UNSUPPORTED_STATUSES.has(status)) {
+    return DEFINITE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+  if (status === 401) {
+    return PERMISSION_DENIED_ONLY_PATTERNS.some((pattern) => pattern.test(normalized));
+  }
+  return false;
 }
 
 /**

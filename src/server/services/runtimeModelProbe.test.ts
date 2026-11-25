@@ -339,6 +339,26 @@ describe('probeRuntimeModel', () => {
     expect(classifyUnsupportedFailure(500, 'internal error')).toBe(false);
   });
 
+  it('treats a 401 that denies permission as a verdict, but not one that blames the credential', async () => {
+    const { classifyUnsupportedFailure } = await import('./runtimeModelProbe.js');
+
+    // The image models on sub2api relays answer 401 with nothing but "无权限":
+    // the key may not use that model, which is a reason to disable it for this
+    // key (and only this key).
+    expect(classifyUnsupportedFailure(401, '无权限')).toBe(true);
+    expect(classifyUnsupportedFailure(401, '{"error":{"message":"无权限"}}')).toBe(true);
+    expect(classifyUnsupportedFailure(401, 'permission denied')).toBe(true);
+    expect(classifyUnsupportedFailure(401, '{"error":{"message":"You are not allowed to use this model"}}')).toBe(true);
+
+    // Credential problems say nothing about the model: disabling on them would
+    // sweep every model of the site.
+    expect(classifyUnsupportedFailure(401, '{"error":{"message":"Authorization failed"}}')).toBe(false);
+    expect(classifyUnsupportedFailure(401, 'invalid api key')).toBe(false);
+    expect(classifyUnsupportedFailure(401, '未授权')).toBe(false);
+    expect(classifyUnsupportedFailure(401, 'session expired')).toBe(false);
+    expect(classifyUnsupportedFailure(401, '')).toBe(false);
+  });
+
   it('does not send max_tokens/max_completion_tokens so probes look like normal client traffic', async () => {
     const { buildRuntimeProbeChatBody } = await import('./runtimeModelProbe.js');
     // A small max_tokens is a classic probe signature for relays (one-api/
