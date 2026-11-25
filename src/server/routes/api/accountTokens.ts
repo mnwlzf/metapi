@@ -172,6 +172,10 @@ async function attachTokenGroupDisplay<
       // Epoch ms of the upstream read behind groupRateMultiplier. The client
       // labels the multiplier with its age rather than presenting it as live.
       groupFetchedAt: snapshot?.fetchedAt ?? null,
+      // Why nothing resolved, when nothing did: "upstream published no groups"
+      // and "the read failed" are different problems, and a bare "#key" used to
+      // hide both. Null whenever the name/rate came through.
+      groupCatalogError: display.status === 'unknown' ? (snapshot?.error ?? null) : null,
     };
   });
 }

@@ -207,6 +207,7 @@ const formatTokenGroupText = (token: any): string => {
   if (rate != null) parts.push(`×${formatGroupRate(rate)}`);
   if (status === 'inactive') parts.push(tr('不可用'));
   if (status === 'removed') parts.push(tr('已删除'));
+  if (!token?.groupName && token?.groupCatalogError) parts.push(tr('分组表读取失败'));
   return parts.join(' · ');
 };
 
@@ -233,9 +234,15 @@ function TokenGroupCell({ token, now }: { token: any; now?: number }) {
   const fetchedLabel = formatGroupRateFetchedAt(token?.groupFetchedAt);
   const nowMs = typeof now === 'number' ? now : Date.now();
   const rateStale = fetchedAtMs !== null && nowMs - fetchedAtMs > GROUP_RATE_STALE_MS;
+  // Nothing resolved *and* the read itself failed: say so instead of letting the
+  // bare "#key" look like a group upstream simply stopped publishing.
+  const catalogError = typeof token?.groupCatalogError === 'string' && token.groupCatalogError
+    ? token.groupCatalogError
+    : null;
   const tooltipParts = [key && key !== name ? `${name}（${key}）` : name];
   if (fetchedLabel) tooltipParts.push(`${tr('倍率更新于')} ${fetchedLabel}`);
   if (rateStale) tooltipParts.push(tr('分组倍率可能已过期，可点“刷新分组倍率”'));
+  if (catalogError) tooltipParts.push(`${tr('读取上游分组表失败')}：${catalogError}`);
   const tooltip = tooltipParts.join(' · ');
   return (
     <span className="token-group-cell">
@@ -256,6 +263,11 @@ function TokenGroupCell({ token, now }: { token: any; now?: number }) {
       {status === 'removed' ? (
         <span className="token-group-status" title={tr('上游分组列表中已没有该分组（已删除或已下架）')}>
           <StatusPill tone="danger" style={{ fontSize: 10 }}>{tr('已删除')}</StatusPill>
+        </span>
+      ) : null}
+      {catalogError ? (
+        <span className="token-group-status" title={`${tr('读取上游分组表失败')}：${catalogError}`}>
+          <StatusPill tone="warning" style={{ fontSize: 10 }}>{tr('分组表读取失败')}</StatusPill>
         </span>
       ) : null}
     </span>
@@ -950,8 +962,19 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
   const handleRefreshGroups = useCallback(async () => {
     setRefreshingGroups(true);
     try {
-      await load({ refreshGroups: true });
-      toast.success(tr('分组倍率已刷新'));
+      const result = await load({ refreshGroups: true });
+      // A forced re-read can fail upstream (expired session, WAF, credential
+      // mode) and the list still renders fine, so the toast has to carry the
+      // failure — otherwise "已刷新" was shown while nothing had been resolved.
+      const failures = (result?.tokens ?? []).filter(
+        (row: any) => !row?.groupName && typeof row?.groupCatalogError === 'string' && row.groupCatalogError,
+      );
+      if (failures.length > 0) {
+        const first = String(failures[0].groupCatalogError);
+        toast.error(`${tr('分组倍率刷新失败')}：${first}${failures.length > 1 ? `（${failures.length} 个账号）` : ''}`);
+      } else {
+        toast.success(tr('分组倍率已刷新'));
+      }
     } finally {
       setRefreshingGroups(false);
     }

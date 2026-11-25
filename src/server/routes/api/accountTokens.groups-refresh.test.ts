@@ -69,6 +69,7 @@ describe('account token group catalog freshness', { timeout: 20_000 }, () => {
       groupStatus: string;
       groupRateMultiplier: number | null;
       groupFetchedAt: number | null;
+      groupCatalogError: string | null;
     }>;
   };
 
@@ -155,5 +156,31 @@ describe('account token group catalog freshness', { timeout: 20_000 }, () => {
     // timestamp) instead of blanking the multiplier the user was shown.
     expect(afterFailure.groupRateMultiplier).toBe(0.1);
     expect(afterFailure.groupFetchedAt).toBe(cached.groupFetchedAt);
+    expect(afterFailure.groupCatalogError).toBeNull();
+  });
+
+  it('says why nothing resolved when the group list can never be read', async () => {
+    // A bare "#295" used to be all the operator saw: "upstream publishes no
+    // groups" and "our read is broken" looked identical, and the refresh button
+    // reported success either way.
+    await seedToken('295');
+    getUserGroupCatalogMock.mockRejectedValue(new Error('HTTP 401 Unauthorized'));
+
+    const [row] = await readTokens('?refreshGroups=1');
+
+    expect(row.groupName).toBeNull();
+    expect(row.groupStatus).toBe('unknown');
+    expect(row.groupRateMultiplier).toBeNull();
+    expect(row.groupCatalogError).toContain('401');
+  });
+
+  it('reports an empty upstream group list as such, not as a read failure', async () => {
+    await seedToken('295');
+    getUserGroupCatalogMock.mockResolvedValue([]);
+
+    const [row] = await readTokens('?refreshGroups=1');
+
+    expect(row.groupName).toBeNull();
+    expect(row.groupCatalogError).toBe('upstream returned no groups');
   });
 });

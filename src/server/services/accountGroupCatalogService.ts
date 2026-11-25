@@ -44,6 +44,14 @@ type CatalogCacheEntry = {
 export type CatalogSnapshot = {
   catalog: UserGroupInfo[];
   fetchedAt: number | null;
+  /**
+   * Why the catalog is empty, when it is. The token list used to render a bare
+   * `#key` with no explanation, so "upstream does not publish group metadata"
+   * looked identical to "our read failed" — and a failed read is usually
+   * actionable (expired session, WAF, wrong credential mode). Null whenever the
+   * name/rate actually resolved (including a stale-but-usable catalog).
+   */
+  error: string | null;
 };
 
 const catalogCache = new Map<number, CatalogCacheEntry>();
@@ -129,7 +137,7 @@ export async function loadAccountGroupCatalogWithMeta(
   const now = Date.now();
   const cached = catalogCache.get(accountId);
   if (!forceRefresh && cached && cached.expiresAt > now) {
-    return { catalog: cached.catalog, fetchedAt: cached.fetchedAt };
+    return { catalog: cached.catalog, fetchedAt: cached.fetchedAt, error: null };
   }
 
   const running = catalogInflight.get(accountId);
@@ -145,11 +153,22 @@ export async function loadAccountGroupCatalogWithMeta(
           fetchedAt,
           expiresAt: fetchedAt + CATALOG_TTL_MS,
         });
-        return { catalog, fetchedAt };
+        return { catalog, fetchedAt, error: null };
       }
-      return fallbackSnapshot(accountId, fetchedAt);
-    } catch {
-      return fallbackSnapshot(accountId, Date.now());
+      const fallback = fallbackSnapshot(accountId, fetchedAt);
+      if (fallback) return { ...fallback, error: null };
+      // A successful read that yields nothing: the account/credential cannot see
+      // any group through the management API (api-key-only connections short
+      // circuit here too, with an empty list).
+      return { catalog: [], fetchedAt: null, error: 'upstream returned no groups' };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Without this the token list silently showed "#key" and nobody could tell
+      // whether upstream stopped publishing groups or our read broke.
+      console.warn(`[group-catalog] account ${accountId} group catalog read failed: ${message}`);
+      const fallback = fallbackSnapshot(accountId, Date.now());
+      if (fallback) return { ...fallback, error: null };
+      return { catalog: [], fetchedAt: null, error: message };
     } finally {
       catalogInflight.delete(accountId);
     }
@@ -162,14 +181,14 @@ export async function loadAccountGroupCatalogWithMeta(
 /**
  * A paid-for-elsewhere failure: keep the last good catalog while it is still
  * recent enough to be useful, and report its (older) timestamp so the UI can say
- * how stale it is.
+ * how stale it is. Null means "nothing worth showing".
  */
-function fallbackSnapshot(accountId: number, now: number): CatalogSnapshot {
+function fallbackSnapshot(accountId: number, now: number): Omit<CatalogSnapshot, 'error'> | null {
   const previous = catalogCache.get(accountId);
   if (previous && now - previous.fetchedAt < CATALOG_MAX_STALE_MS) {
     return { catalog: previous.catalog, fetchedAt: previous.fetchedAt };
   }
-  return { catalog: [], fetchedAt: null };
+  return null;
 }
 
 /**
