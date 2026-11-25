@@ -10,6 +10,7 @@ import {
   hasProxyLogDownstreamApiKeyIdColumn,
   hasProxyLogStreamTimingColumns,
   hasProxyLogRequestTraceIdColumn,
+  hasProxyLogTokenGroupRateColumn,
   hasProxyLogTokenIdColumn,
 } from '../db/index.js';
 import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
@@ -38,6 +39,12 @@ export type ProxyLogInsertInput = {
   cacheReadTokens?: number | null;
   cacheCreationTokens?: number | null;
   reasoningEffort?: string | null;
+  /**
+   * The token group's upstream multiplier this request billed at. Defaults to
+   * whatever the billing payload recorded, so call sites that already compute
+   * billing do not have to thread it through.
+   */
+  tokenGroupRate?: number | null;
   estimatedCost?: number | null;
   billingDetails?: unknown;
   clientFamily?: string | null;
@@ -101,14 +108,17 @@ function buildProxyLogTokenSelectFields() {
   };
 }
 
-function buildProxyLogSelectFields(options?: {
+type ProxyLogSelectFieldOptions = {
   includeBillingDetails?: boolean;
   includeCacheTokens?: boolean;
   includeClientFields?: boolean;
   includeStreamTimingFields?: boolean;
   includeRequestTraceId?: boolean;
+  includeTokenGroupRate?: boolean;
   includeTokenId?: boolean;
-}) {
+};
+
+function buildProxyLogSelectFields(options?: ProxyLogSelectFieldOptions) {
   return {
     ...buildProxyLogCoreSelectFields(),
     ...(options?.includeCacheTokens ? {
@@ -117,6 +127,7 @@ function buildProxyLogSelectFields(options?: {
       reasoningEffort: schema.proxyLogs.reasoningEffort,
       responseModel: schema.proxyLogs.responseModel,
     } : {}),
+    ...(options?.includeTokenGroupRate ? { tokenGroupRate: schema.proxyLogs.tokenGroupRate } : {}),
     ...(options?.includeStreamTimingFields ? buildProxyLogStreamTimingSelectFields() : {}),
     ...(options?.includeClientFields ? buildProxyLogClientSelectFields() : {}),
     ...(options?.includeBillingDetails ? { billingDetails: schema.proxyLogs.billingDetails } : {}),
@@ -137,18 +148,25 @@ export type ResolvedProxyLogSelectFields = {
   includeClientFields: boolean;
   includeStreamTimingFields: boolean;
   includeRequestTraceId: boolean;
+  includeTokenGroupRate: boolean;
   includeTokenId: boolean;
   fields: ProxyLogSelectFields;
 };
 
-export async function resolveProxyLogSelectFields(options?: {
-  includeBillingDetails?: boolean;
-  includeCacheTokens?: boolean;
-  includeClientFields?: boolean;
-  includeStreamTimingFields?: boolean;
-  includeRequestTraceId?: boolean;
-  includeTokenId?: boolean;
-}) {
+/**
+ * Derive the select-field set from the enabled capabilities.
+ *
+ * The fields are always a function of the flags, never hand-assembled: a legacy
+ * retry path that rebuilt them by hand silently dropped whatever capability was
+ * added last.
+ */
+function buildResolvedSelection(
+  flags: Omit<ResolvedProxyLogSelectFields, 'fields'>,
+): ResolvedProxyLogSelectFields {
+  return { ...flags, fields: buildProxyLogSelectFields(flags) };
+}
+
+export async function resolveProxyLogSelectFields(options?: ProxyLogSelectFieldOptions) {
   const includeBillingDetails = options?.includeBillingDetails === true
     && await hasProxyLogBillingDetailsColumn();
   const includeCacheTokens = options?.includeCacheTokens !== false
@@ -159,36 +177,25 @@ export async function resolveProxyLogSelectFields(options?: {
     && await hasProxyLogStreamTimingColumns();
   const includeRequestTraceId = options?.includeRequestTraceId !== false
     && await hasProxyLogRequestTraceIdColumn();
+  const includeTokenGroupRate = options?.includeTokenGroupRate !== false
+    && await hasProxyLogTokenGroupRateColumn();
   const includeTokenId = options?.includeTokenId !== false
     && await hasProxyLogTokenIdColumn();
 
-  return {
+  return buildResolvedSelection({
     includeBillingDetails,
     includeCacheTokens,
     includeClientFields,
     includeStreamTimingFields,
     includeRequestTraceId,
+    includeTokenGroupRate,
     includeTokenId,
-    fields: buildProxyLogSelectFields({
-      includeBillingDetails,
-      includeCacheTokens,
-      includeClientFields,
-      includeStreamTimingFields,
-      includeRequestTraceId,
-      includeTokenId,
-    }),
-  };
+  });
 }
 
 export async function withProxyLogSelectFields<T>(
   runner: (selection: ResolvedProxyLogSelectFields) => Promise<T>,
-  options?: {
-    includeBillingDetails?: boolean;
-    includeCacheTokens?: boolean;
-    includeClientFields?: boolean;
-    includeStreamTimingFields?: boolean;
-    includeRequestTraceId?: boolean;
-  },
+  options?: ProxyLogSelectFieldOptions,
 ): Promise<T> {
   let selection = await resolveProxyLogSelectFields(options);
 
@@ -196,123 +203,40 @@ export async function withProxyLogSelectFields<T>(
     try {
       return await runner(selection);
     } catch (error) {
+      // A legacy database can predate any one of these columns. Drop exactly the
+      // capability that failed and retry, keeping the rest of the selection.
       if (selection.includeBillingDetails && isMissingBillingDetailsColumnError(error)) {
-        selection = {
-          includeBillingDetails: false,
-          includeCacheTokens: selection.includeCacheTokens,
-          includeClientFields: selection.includeClientFields,
-          includeStreamTimingFields: selection.includeStreamTimingFields,
-          includeRequestTraceId: selection.includeRequestTraceId,
-          includeTokenId: selection.includeTokenId,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: false,
-            includeCacheTokens: selection.includeCacheTokens,
-            includeClientFields: selection.includeClientFields,
-            includeStreamTimingFields: selection.includeStreamTimingFields,
-            includeRequestTraceId: selection.includeRequestTraceId,
-            includeTokenId: selection.includeTokenId,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeBillingDetails: false });
         continue;
       }
 
       if (selection.includeCacheTokens && isMissingProxyLogCacheTokensColumnsError(error)) {
-        selection = {
-          includeBillingDetails: selection.includeBillingDetails,
-          includeCacheTokens: false,
-          includeClientFields: selection.includeClientFields,
-          includeStreamTimingFields: selection.includeStreamTimingFields,
-          includeRequestTraceId: selection.includeRequestTraceId,
-          includeTokenId: selection.includeTokenId,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: selection.includeBillingDetails,
-            includeCacheTokens: false,
-            includeClientFields: selection.includeClientFields,
-            includeStreamTimingFields: selection.includeStreamTimingFields,
-            includeRequestTraceId: selection.includeRequestTraceId,
-            includeTokenId: selection.includeTokenId,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeCacheTokens: false });
+        continue;
+      }
+
+      if (selection.includeTokenGroupRate && isMissingProxyLogTokenGroupRateColumnError(error)) {
+        selection = buildResolvedSelection({ ...selection, includeTokenGroupRate: false });
         continue;
       }
 
       if (selection.includeClientFields && isMissingProxyLogClientColumnsError(error)) {
-        selection = {
-          includeBillingDetails: selection.includeBillingDetails,
-          includeCacheTokens: selection.includeCacheTokens,
-          includeClientFields: false,
-          includeStreamTimingFields: selection.includeStreamTimingFields,
-          includeRequestTraceId: selection.includeRequestTraceId,
-          includeTokenId: selection.includeTokenId,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: selection.includeBillingDetails,
-            includeCacheTokens: selection.includeCacheTokens,
-            includeClientFields: false,
-            includeStreamTimingFields: selection.includeStreamTimingFields,
-            includeRequestTraceId: selection.includeRequestTraceId,
-            includeTokenId: selection.includeTokenId,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeClientFields: false });
         continue;
       }
 
       if (selection.includeStreamTimingFields && isMissingProxyLogStreamTimingColumnsError(error)) {
-        selection = {
-          includeBillingDetails: selection.includeBillingDetails,
-          includeCacheTokens: selection.includeCacheTokens,
-          includeClientFields: selection.includeClientFields,
-          includeStreamTimingFields: false,
-          includeRequestTraceId: selection.includeRequestTraceId,
-          includeTokenId: selection.includeTokenId,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: selection.includeBillingDetails,
-            includeCacheTokens: selection.includeCacheTokens,
-            includeClientFields: selection.includeClientFields,
-            includeStreamTimingFields: false,
-            includeRequestTraceId: selection.includeRequestTraceId,
-            includeTokenId: selection.includeTokenId,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeStreamTimingFields: false });
         continue;
       }
 
       if (selection.includeRequestTraceId && isMissingProxyLogRequestTraceIdColumnError(error)) {
-        selection = {
-          includeBillingDetails: selection.includeBillingDetails,
-          includeCacheTokens: selection.includeCacheTokens,
-          includeClientFields: selection.includeClientFields,
-          includeStreamTimingFields: selection.includeStreamTimingFields,
-          includeRequestTraceId: false,
-          includeTokenId: selection.includeTokenId,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: selection.includeBillingDetails,
-            includeCacheTokens: selection.includeCacheTokens,
-            includeClientFields: selection.includeClientFields,
-            includeStreamTimingFields: selection.includeStreamTimingFields,
-            includeRequestTraceId: false,
-            includeTokenId: selection.includeTokenId,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeRequestTraceId: false });
         continue;
       }
 
       if (selection.includeTokenId && isMissingProxyLogTokenIdColumnError(error)) {
-        selection = {
-          includeBillingDetails: selection.includeBillingDetails,
-          includeCacheTokens: selection.includeCacheTokens,
-          includeClientFields: selection.includeClientFields,
-          includeStreamTimingFields: selection.includeStreamTimingFields,
-          includeRequestTraceId: selection.includeRequestTraceId,
-          includeTokenId: false,
-          fields: buildProxyLogSelectFields({
-            includeBillingDetails: selection.includeBillingDetails,
-            includeCacheTokens: selection.includeCacheTokens,
-            includeClientFields: selection.includeClientFields,
-            includeStreamTimingFields: selection.includeStreamTimingFields,
-            includeRequestTraceId: selection.includeRequestTraceId,
-            includeTokenId: false,
-          }),
-        };
+        selection = buildResolvedSelection({ ...selection, includeTokenId: false });
         continue;
       }
 
@@ -334,6 +258,42 @@ export function parseProxyLogBillingDetails(value: unknown): Record<string, unkn
   } catch {
     return null;
   }
+}
+
+export type ProxyLogBillingGroupRateSnapshot = {
+  rate: number;
+  source: 'pricing' | 'catalog';
+  groupKey: string;
+};
+
+/**
+ * Read the group multiplier the request was actually billed at out of a stored
+ * `billing_details` payload.
+ *
+ * The multiplier is resolved from upstream metadata caches with a 5-10 minute
+ * TTL, so a read-time re-resolution answers "unknown" for basically every
+ * historical row. The value recorded while billing is the only stable answer,
+ * which is why it is snapshotted there. Returns null when the row has no
+ * snapshot (written before this was recorded, or the rate was genuinely
+ * unknown at billing time) — never fall back to 1x.
+ */
+export function readProxyLogBillingGroupRate(value: unknown): ProxyLogBillingGroupRateSnapshot | null {
+  const details = parseProxyLogBillingDetails(value);
+  const raw = details?.tokenGroupRate;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  const rate = typeof record.rate === 'number' ? record.rate : Number.NaN;
+  // 0 is a legitimate free-group multiplier; reject only unusable values.
+  if (!Number.isFinite(rate) || rate < 0) return null;
+  const source = record.source === 'pricing' || record.source === 'catalog'
+    ? record.source
+    : null;
+  if (!source) return null;
+  return {
+    rate,
+    source,
+    groupKey: typeof record.groupKey === 'string' ? record.groupKey : '',
+  };
 }
 
 function toNonNegativeIntOrNull(value: unknown): number | null {
@@ -441,6 +401,17 @@ export function isMissingProxyLogStreamTimingColumnsError(error: unknown): boole
 export function isMissingProxyLogRequestTraceIdColumnError(error: unknown): boolean {
   const lowered = normalizeProxyLogStoreErrorMessage(error);
   return lowered.includes('request_trace_id')
+    && (
+      lowered.includes('does not exist')
+      || lowered.includes('unknown column')
+      || lowered.includes('no such column')
+      || lowered.includes('has no column named')
+    );
+}
+
+export function isMissingProxyLogTokenGroupRateColumnError(error: unknown): boolean {
+  const lowered = normalizeProxyLogStoreErrorMessage(error);
+  return lowered.includes('token_group_rate')
     && (
       lowered.includes('does not exist')
       || lowered.includes('unknown column')
@@ -611,6 +582,13 @@ export async function insertProxyLog(input: ProxyLogInsertInput): Promise<void> 
   } | null | undefined)?.usage;
   const cacheReadTokens = input.cacheReadTokens ?? toNonNegativeIntOrNull(billingUsage?.cacheReadTokens);
   const cacheCreationTokens = input.cacheCreationTokens ?? toNonNegativeIntOrNull(billingUsage?.cacheCreationTokens);
+  // Group multiplier: an explicit value wins, otherwise lift the one the billing
+  // step resolved into its payload. It is persisted per row because upstream
+  // reprices groups over time — a read-time re-derivation would answer "unknown"
+  // for older rows and, worse, relabel a 0.01x request with today's 0.20x.
+  const tokenGroupRate = input.tokenGroupRate
+    ?? readProxyLogBillingGroupRate(input.billingDetails)?.rate
+    ?? null;
   // Reasoning effort: an explicit value wins, otherwise use whatever the proxy
   // router captured for this request (chat: reasoning_effort, responses:
   // reasoning.effort).
@@ -638,6 +616,8 @@ export async function insertProxyLog(input: ProxyLogInsertInput): Promise<void> 
     && await hasProxyLogRequestTraceIdColumn();
   const includeTokenId = input.tokenId != null && input.tokenId > 0
     && await hasProxyLogTokenIdColumn();
+  const includeTokenGroupRate = tokenGroupRate != null
+    && await hasProxyLogTokenGroupRateColumn();
 
   let allowBillingDetails = includeBillingDetails;
   let allowCacheTokens = includeCacheTokens;
@@ -648,6 +628,7 @@ export async function insertProxyLog(input: ProxyLogInsertInput): Promise<void> 
   let allowStreamTimingFields = includeStreamTimingFields;
   let allowRequestTraceId = includeRequestTraceId;
   let allowTokenId = includeTokenId;
+  let allowTokenGroupRate = includeTokenGroupRate;
 
   while (true) {
     const values = {
@@ -671,6 +652,7 @@ export async function insertProxyLog(input: ProxyLogInsertInput): Promise<void> 
         : {}),
       ...(allowReasoningEffort ? { reasoningEffort } : {}),
       ...(allowResponseModel ? { responseModel } : {}),
+      ...(allowTokenGroupRate ? { tokenGroupRate } : {}),
       ...(allowDownstreamApiKeyId ? { downstreamApiKeyId: input.downstreamApiKeyId } : {}),
       ...(allowClientFields
         ? {
@@ -706,6 +688,11 @@ export async function insertProxyLog(input: ProxyLogInsertInput): Promise<void> 
 
       if (allowResponseModel && isMissingProxyLogResponseModelColumnError(error)) {
         allowResponseModel = false;
+        continue;
+      }
+
+      if (allowTokenGroupRate && isMissingProxyLogTokenGroupRateColumnError(error)) {
+        allowTokenGroupRate = false;
         continue;
       }
 

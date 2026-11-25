@@ -4,12 +4,16 @@ import { and, desc, eq, gte, inArray, lt, sql } from 'drizzle-orm';
 import { config } from '../../config.js';
 import {
   parseProxyLogBillingDetails,
+  readProxyLogBillingGroupRate,
   withProxyLogSelectFields,
 } from '../../services/proxyLogStore.js';
 import { proxyLogEventBus, type ProxyLogEvent } from '../../services/proxyLogEventBus.js';
 import { parseProxyLogMessageMeta } from '../../services/proxyLogMessage.js';
 import { canonicalizeModelName } from '../../shared/modelCanonicalization.js';
-import { resolveUpstreamGroupRate } from '../../services/upstreamGroupRateResolver.js';
+import {
+  requestUpstreamGroupRateReadWarmup,
+  resolveUpstreamGroupRate,
+} from '../../services/upstreamGroupRateResolver.js';
 import {formatUtcSqlDateTime} from '../../services/localTimeService.js';
 import {
   normalizeProxyLogsView,
@@ -283,15 +287,40 @@ function mapProxyLogRow(
       : '',
   );
   const tokenGroup = row.account_tokens?.tokenGroup || null;
-  // The multiplier this request actually billed at, resolved from the same
-  // sources the router uses (upstream pricing group_ratio / sub2api catalog).
-  // Caches may be cold for historical rows, so unknown is a real answer.
+  // The token group's multiplier is a property of *the request*, not of the row's
+  // age: upstream reprices groups at will, so re-deriving it here would report
+  // today's 0.20x against a charge that was actually made at 0.01x. The value
+  // recorded while this request was billed therefore wins, in this order:
+  // 1. `proxy_logs.token_group_rate` (persisted per row),
+  // 2. the copy inside `billing_details` (rows written before the column existed),
+  // 3. a live resolution, for rows that recorded nothing — the in-memory metadata
+  //    caches only live 5-10 minutes, so this also kicks a throttled refresh
+  //    (one attempt per account per minute; the callees skip fetching while their
+  //    own TTL is still valid) instead of leaving the row stuck at "?".
+  // `tokenGroupRateSource` tells the UI which of the three it got: 'log' means
+  // "recorded with this request".
   const accountId = typeof row.proxy_logs.accountId === 'number' ? row.proxy_logs.accountId : null;
   const siteId = row.sites?.id || null;
-  const groupRateResolution = accountId && siteId
+  const persistedGroupRate = typeof row.proxy_logs.tokenGroupRate === 'number'
+    && Number.isFinite(row.proxy_logs.tokenGroupRate)
+    && row.proxy_logs.tokenGroupRate >= 0
+    ? row.proxy_logs.tokenGroupRate
+    : null;
+  const recordedGroupRate = persistedGroupRate
+    ?? readProxyLogBillingGroupRate(row.proxy_logs.billingDetails)?.rate
+    ?? null;
+  const groupRateResolution = recordedGroupRate === null && accountId && siteId
     ? resolveUpstreamGroupRate({ site: { id: siteId }, account: { id: accountId }, token: { tokenGroup } })
     : null;
-  return {
+  const tokenGroupRate = recordedGroupRate
+    ?? (groupRateResolution?.known ? groupRateResolution.rate : null);
+  const tokenGroupRateSource: 'pricing' | 'catalog' | 'log' | null = recordedGroupRate !== null
+    ? 'log'
+    : (groupRateResolution?.known ? groupRateResolution.source : null);
+  if (accountId && tokenGroupRate === null) {
+    requestUpstreamGroupRateReadWarmup(accountId);
+  }
+  const mapped: Record<string, unknown> = {
     ...row.proxy_logs,
     isStream:
       row.proxy_logs.isStream == null ? null : Boolean(row.proxy_logs.isStream),
@@ -299,13 +328,6 @@ function mapProxyLogRow(
       typeof row.proxy_logs.firstByteLatencyMs === 'number'
         ? row.proxy_logs.firstByteLatencyMs
         : null,
-    ...(options?.includeBillingDetails
-      ? {
-          billingDetails: parseProxyLogBillingDetails(
-            row.proxy_logs.billingDetails,
-          ),
-        }
-      : {}),
     clientFamily: clientMeta.clientFamily,
     clientAppId: clientMeta.clientAppId,
     clientAppName: clientMeta.clientAppName,
@@ -315,8 +337,8 @@ function mapProxyLogRow(
     tokenId: typeof row.proxy_logs.tokenId === 'number' ? row.proxy_logs.tokenId : null,
     tokenName: row.account_tokens?.name || null,
     tokenGroup,
-    tokenGroupRate: groupRateResolution?.known ? groupRateResolution.rate : null,
-    tokenGroupRateSource: groupRateResolution?.known ? groupRateResolution.source : null,
+    tokenGroupRate,
+    tokenGroupRateSource,
     siteId: row.sites?.id || null,
     siteName: row.sites?.name || null,
     siteUrl: row.sites?.url || null,
@@ -328,6 +350,14 @@ function mapProxyLogRow(
       : null,
     downstreamKeyTags: parseDownstreamKeyTags(row.downstream_api_keys?.tags),
   };
+  if (options?.includeBillingDetails) {
+    mapped.billingDetails = parseProxyLogBillingDetails(row.proxy_logs.billingDetails);
+  } else {
+    // List queries select `billing_details` only to read the rate snapshot out of
+    // it; the full payload stays detail-only so the list response stays small.
+    delete mapped.billingDetails;
+  }
+  return mapped;
 }
 
 export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
@@ -581,7 +611,9 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
           )
           .where(inArray(schema.proxyLogs.id, pageGroups.ids))
           .all(),
-      { includeBillingDetails: false, includeRequestTraceId: true },
+      // Select the billing payload so the rate snapshot it carries can be read
+      // for list rows too; `mapProxyLogRow` drops it again from the response.
+      { includeBillingDetails: true, includeRequestTraceId: true },
     )) as Array<{
       proxy_logs: Record<string, unknown> & {
         id?: number;

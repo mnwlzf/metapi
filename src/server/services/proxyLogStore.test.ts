@@ -10,6 +10,7 @@ const {
   hasProxyLogTokenIdColumnMock,
   hasProxyLogReasoningEffortColumnMock,
   hasProxyLogResponseModelColumnMock,
+  hasProxyLogTokenGroupRateColumnMock,
   dbInsertMock,
   dbInsertValuesMock,
   dbInsertRunMock,
@@ -24,6 +25,7 @@ const {
   hasProxyLogTokenIdColumnMock: vi.fn(),
   hasProxyLogReasoningEffortColumnMock: vi.fn(),
   hasProxyLogResponseModelColumnMock: vi.fn(),
+  hasProxyLogTokenGroupRateColumnMock: vi.fn(),
   dbInsertMock: vi.fn(),
   dbInsertValuesMock: vi.fn(),
   dbInsertRunMock: vi.fn(),
@@ -46,6 +48,7 @@ const {
     cacheCreationTokens: 'cache_creation_tokens',
     reasoningEffort: 'reasoning_effort',
     responseModel: 'response_model',
+    tokenGroupRate: 'token_group_rate',
     estimatedCost: 'estimated_cost',
     billingDetails: 'billing_details',
     clientFamily: 'client_family',
@@ -76,9 +79,10 @@ vi.mock('../db/index.js', () => ({
   hasProxyLogTokenIdColumn: (...args: unknown[]) => hasProxyLogTokenIdColumnMock(...args),
   hasProxyLogReasoningEffortColumn: (...args: unknown[]) => hasProxyLogReasoningEffortColumnMock(...args),
   hasProxyLogResponseModelColumn: (...args: unknown[]) => hasProxyLogResponseModelColumnMock(...args),
+  hasProxyLogTokenGroupRateColumn: (...args: unknown[]) => hasProxyLogTokenGroupRateColumnMock(...args),
 }));
 
-import { insertProxyLog, parseProxyLogBillingDetails, withProxyLogSelectFields } from './proxyLogStore.js';
+import { insertProxyLog, parseProxyLogBillingDetails, readProxyLogBillingGroupRate, withProxyLogSelectFields } from './proxyLogStore.js';
 import { setCurrentReasoningEffort } from './reasoningEffort.js';
 import { captureUpstreamResponseModel, setUpstreamResponseModel } from './upstreamResponseModel.js';
 
@@ -93,6 +97,7 @@ describe('proxyLogStore', () => {
     hasProxyLogTokenIdColumnMock.mockReset();
     hasProxyLogReasoningEffortColumnMock.mockReset();
     hasProxyLogResponseModelColumnMock.mockReset();
+    hasProxyLogTokenGroupRateColumnMock.mockReset();
     dbInsertMock.mockReset();
     dbInsertValuesMock.mockReset();
     dbInsertRunMock.mockReset();
@@ -105,6 +110,7 @@ describe('proxyLogStore', () => {
     hasProxyLogTokenIdColumnMock.mockResolvedValue(false);
     hasProxyLogReasoningEffortColumnMock.mockResolvedValue(false);
     hasProxyLogResponseModelColumnMock.mockResolvedValue(false);
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(false);
     // The capture lives in module-level async storage; a test that set it must
     // not leak into the next one.
     setUpstreamResponseModel(null);
@@ -288,6 +294,71 @@ describe('proxyLogStore', () => {
     expect(runner.mock.calls[1][0].fields.firstByteLatencyMs).toBeUndefined();
   });
 
+  it('selects the persisted group rate and retries without it on legacy databases', async () => {
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(true);
+    const runner = vi.fn()
+      .mockRejectedValueOnce(new Error('no such column: proxy_logs.token_group_rate'))
+      .mockResolvedValueOnce([{ id: 1 }]);
+
+    await expect(withProxyLogSelectFields(runner)).resolves.toEqual([{ id: 1 }]);
+
+    expect(runner).toHaveBeenCalledTimes(2);
+    expect(runner.mock.calls[0][0].includeTokenGroupRate).toBe(true);
+    expect(runner.mock.calls[0][0].fields.tokenGroupRate).toBe('token_group_rate');
+    expect(runner.mock.calls[1][0].includeTokenGroupRate).toBe(false);
+    expect(runner.mock.calls[1][0].fields.tokenGroupRate).toBeUndefined();
+  });
+
+  it('persists the group rate each request billed at, even after upstream reprices', async () => {
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(true);
+    dbInsertRunMock.mockResolvedValue(undefined);
+
+    await insertProxyLog({
+      modelRequested: 'deepseek-v4.1-flash',
+      billingDetails: {
+        basis: 'upstream-quota',
+        tokenGroupRate: { rate: 0.01, source: 'catalog', groupKey: '270' },
+      },
+    });
+
+    expect(dbInsertValuesMock.mock.calls[0][0]).toMatchObject({ tokenGroupRate: 0.01 });
+  });
+
+  it('lets an explicit group rate win over the billing payload copy', async () => {
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(true);
+    dbInsertRunMock.mockResolvedValue(undefined);
+
+    await insertProxyLog({
+      modelRequested: 'gpt-5',
+      tokenGroupRate: 0.2,
+      billingDetails: { tokenGroupRate: { rate: 0.01, source: 'catalog', groupKey: '270' } },
+    });
+
+    expect(dbInsertValuesMock.mock.calls[0][0]).toMatchObject({ tokenGroupRate: 0.2 });
+  });
+
+  it('writes no group rate rather than 1x when the rate was unknown', async () => {
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(true);
+    dbInsertRunMock.mockResolvedValue(undefined);
+
+    await insertProxyLog({ modelRequested: 'gpt-5', billingDetails: { basis: 'upstream-quota' } });
+
+    expect(dbInsertValuesMock.mock.calls[0][0].tokenGroupRate).toBeUndefined();
+  });
+
+  it('retries proxy log inserts without the group rate when the column is missing', async () => {
+    hasProxyLogTokenGroupRateColumnMock.mockResolvedValue(true);
+    dbInsertRunMock
+      .mockRejectedValueOnce(new Error('table proxy_logs has no column named token_group_rate'))
+      .mockResolvedValueOnce(undefined);
+
+    await insertProxyLog({ modelRequested: 'gpt-5', tokenGroupRate: 0.12 });
+
+    expect(dbInsertValuesMock).toHaveBeenCalledTimes(2);
+    expect(dbInsertValuesMock.mock.calls[0][0]).toMatchObject({ tokenGroupRate: 0.12 });
+    expect(dbInsertValuesMock.mock.calls[1][0].tokenGroupRate).toBeUndefined();
+  });
+
   it('accepts parsed billing details objects for helper-level callers', () => {
     expect(parseProxyLogBillingDetails({
       source: 'pricing',
@@ -296,6 +367,30 @@ describe('proxyLogStore', () => {
       source: 'pricing',
       usd: 1.25,
     });
+  });
+
+  it('reads the group-rate snapshot recorded at billing time', () => {
+    expect(readProxyLogBillingGroupRate(JSON.stringify({
+      tokenGroupRate: { rate: 0.12, source: 'catalog', groupKey: '270' },
+    }))).toEqual({ rate: 0.12, source: 'catalog', groupKey: '270' });
+
+    // A free group's 0x multiplier is a real answer, not a missing one.
+    expect(readProxyLogBillingGroupRate({
+      tokenGroupRate: { rate: 0, source: 'pricing', groupKey: 'free' },
+    })).toEqual({ rate: 0, source: 'pricing', groupKey: 'free' });
+  });
+
+  it('reports no snapshot instead of falling back to 1x', () => {
+    expect(readProxyLogBillingGroupRate(null)).toBeNull();
+    expect(readProxyLogBillingGroupRate(JSON.stringify({
+      breakdown: { totalCost: 1 },
+    }))).toBeNull();
+    expect(readProxyLogBillingGroupRate(JSON.stringify({
+      tokenGroupRate: { rate: -1, source: 'catalog' },
+    }))).toBeNull();
+    expect(readProxyLogBillingGroupRate(JSON.stringify({
+      tokenGroupRate: { rate: 0.2, source: 'guess' },
+    }))).toBeNull();
   });
 
   it('canonicalizes the downstream model name (drops provider prefix) before insert', async () => {

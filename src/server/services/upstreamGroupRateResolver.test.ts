@@ -1,8 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const { dbGetMock } = vi.hoisted(() => ({ dbGetMock: vi.fn() }));
+
 vi.mock('./modelPricingService.js', () => ({
   getCachedGroupRate: vi.fn(),
   requestRoutingReferenceCostWarmup: vi.fn(),
+}));
+
+vi.mock('../db/index.js', () => ({
+  db: {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({ get: (...args: unknown[]) => dbGetMock(...args) }),
+        }),
+      }),
+    }),
+  },
+  schema: {
+    accounts: { id: 'accounts.id', siteId: 'accounts.site_id' },
+    sites: { id: 'sites.id', url: 'sites.url', platform: 'sites.platform' },
+  },
 }));
 
 vi.mock('./accountGroupCatalogService.js', async (importOriginal) => {
@@ -17,7 +35,9 @@ vi.mock('./accountGroupCatalogService.js', async (importOriginal) => {
 const { getCachedGroupRate, requestRoutingReferenceCostWarmup } = await import('./modelPricingService.js');
 const { peekAccountGroupCatalog, requestAccountGroupCatalogWarmup } = await import('./accountGroupCatalogService.js');
 const {
+  __resetUpstreamGroupRateReadWarmupForTests,
   evaluateUpstreamRateLimit,
+  requestUpstreamGroupRateReadWarmup,
   requestUpstreamGroupRateWarmup,
   resolveUpstreamGroupRate,
 } = await import('./upstreamGroupRateResolver.js');
@@ -43,7 +63,13 @@ beforeEach(() => {
   vi.mocked(peekAccountGroupCatalog).mockReset();
   vi.mocked(requestRoutingReferenceCostWarmup).mockReset();
   vi.mocked(requestAccountGroupCatalogWarmup).mockReset();
+  dbGetMock.mockReset();
+  __resetUpstreamGroupRateReadWarmupForTests();
 });
+
+const flushAsync = async () => {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+};
 
 describe('resolveUpstreamGroupRate', () => {
   it('reads the group ratio from the pricing catalog first', () => {
@@ -132,6 +158,41 @@ describe('requestUpstreamGroupRateWarmup', () => {
     });
 
     expect(requestAccountGroupCatalogWarmup).toHaveBeenCalledWith(11);
+    expect(requestRoutingReferenceCostWarmup).not.toHaveBeenCalled();
+  });
+});
+
+describe('requestUpstreamGroupRateReadWarmup', () => {
+  it('loads the credentials it needs and warms both sources once per window', async () => {
+    dbGetMock.mockResolvedValue({
+      siteId: 7,
+      siteUrl: 'https://up.example.com',
+      sitePlatform: 'new-api',
+      accessToken: 'session=abc',
+      apiToken: 'sk-up',
+    });
+
+    requestUpstreamGroupRateReadWarmup(11);
+    // A log page renders many rows for one account: the throttle must collapse
+    // them into a single attempt instead of one DB read (and fetch) per row.
+    requestUpstreamGroupRateReadWarmup(11);
+    await flushAsync();
+
+    expect(dbGetMock).toHaveBeenCalledTimes(1);
+    expect(requestAccountGroupCatalogWarmup).toHaveBeenCalledWith(11);
+    expect(requestRoutingReferenceCostWarmup).toHaveBeenCalledWith(expect.objectContaining({
+      site: expect.objectContaining({ id: 7, url: 'https://up.example.com', platform: 'new-api' }),
+      account: expect.objectContaining({ id: 11, accessToken: 'session=abc', apiToken: 'sk-up' }),
+    }));
+  });
+
+  it('still tries the group catalog when the account row is gone', async () => {
+    dbGetMock.mockResolvedValue(undefined);
+
+    requestUpstreamGroupRateReadWarmup(99);
+    await flushAsync();
+
+    expect(requestAccountGroupCatalogWarmup).toHaveBeenCalledWith(99);
     expect(requestRoutingReferenceCostWarmup).not.toHaveBeenCalled();
   });
 });

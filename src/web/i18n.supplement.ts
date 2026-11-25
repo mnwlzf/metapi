@@ -1580,6 +1580,7 @@ export const zhToEnSupplemental: Record<string, string> = {
   '密钥倍率上限：': 'Key rate ceiling: ',
   '密钥倍率上限': 'Key rate ceiling',
   '（站点分组表）': ' (site group table)',
+  '（请求时倍率）': ' (multiplier at request time)',
   '（在范围内）': ' (within ceiling)',
   '（超出上限）': ' (above ceiling)',
   '倍率判定': 'Rate check',

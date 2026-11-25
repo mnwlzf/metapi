@@ -1,14 +1,29 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const estimateProxyCostMock = vi.fn();
 const buildProxyBillingDetailsMock = vi.fn();
+
+const { resolveUpstreamGroupRateMock } = vi.hoisted(() => ({
+  resolveUpstreamGroupRateMock: vi.fn(),
+}));
 
 vi.mock('./modelPricingService.js', () => ({
   estimateProxyCost: (...args: unknown[]) => estimateProxyCostMock(...args),
   buildProxyBillingDetails: (...args: unknown[]) => buildProxyBillingDetailsMock(...args),
 }));
 
+vi.mock('./upstreamGroupRateResolver.js', () => ({
+  resolveUpstreamGroupRate: (...args: unknown[]) => resolveUpstreamGroupRateMock(...args),
+}));
+
 import { resolveProxyLogBilling } from './proxyBilling.js';
+
+const UNKNOWN_GROUP_RATE = { known: false, rate: null, source: null, groupKey: 'default' };
+
+beforeEach(() => {
+  resolveUpstreamGroupRateMock.mockReset();
+  resolveUpstreamGroupRateMock.mockReturnValue(UNKNOWN_GROUP_RATE);
+});
 
 describe('resolveProxyLogBilling', () => {
   it('uses billing breakdown total when the standalone estimate is zero', async () => {
@@ -223,5 +238,125 @@ describe('resolveProxyLogBilling', () => {
       computedTotalCost: 0.000091,
       quota: { amount: 0.00015, applied: true },
     });
+  });
+
+  it('snapshots the group multiplier resolved while billing', async () => {
+    resolveUpstreamGroupRateMock.mockReturnValue({
+      known: true,
+      rate: 0.12,
+      source: 'catalog',
+      groupKey: '270',
+    });
+    estimateProxyCostMock.mockResolvedValue(0.000221);
+    buildProxyBillingDetailsMock.mockResolvedValue({
+      basis: 'sub2api-per-token',
+      estimateBasis: 'sub2api-per-token',
+      perToken: {
+        inputPerMillion: 0.9,
+        outputPerMillion: 2.7,
+        cacheReadPerMillion: 0.09,
+        cacheCreationPerMillion: 0.9,
+        groupRate: 0.12,
+        source: 'catalog',
+      },
+      usage: {
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        billablePromptTokens: 1200,
+      },
+      breakdown: {
+        inputPerMillion: 0.108,
+        outputPerMillion: 0.324,
+        cacheReadPerMillion: 0.0108,
+        cacheCreationPerMillion: 0.108,
+        totalCost: 0.000221,
+      },
+    });
+
+    const result = await resolveProxyLogBilling({
+      site: { id: 3, url: 'https://sub.sailapi.top', platform: 'sub2api' },
+      account: { id: 4 },
+      modelName: 'deepseek-v4.1-flash',
+      tokenGroup: '270',
+      parsedUsage: {
+        promptTokens: 1200,
+        completionTokens: 400,
+        totalTokens: 1600,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        promptTokensIncludeCache: true,
+      },
+      resolvedUsage: {
+        promptTokens: 1200,
+        completionTokens: 400,
+        totalTokens: 1600,
+        recoveredFromSelfLog: false,
+        estimatedCostFromQuota: 0,
+        selfLogBillingMeta: null,
+      },
+    });
+
+    expect(resolveUpstreamGroupRateMock).toHaveBeenCalledWith({
+      site: { id: 3 },
+      account: { id: 4 },
+      token: { tokenGroup: '270' },
+    });
+    // The caches that hold a group multiplier expire in 5-10 minutes, so the log
+    // row keeps its own answer instead of rendering "?" minutes later.
+    expect(result.billingDetails?.tokenGroupRate).toEqual({
+      rate: 0.12,
+      source: 'catalog',
+      groupKey: '270',
+    });
+  });
+
+  it('records nothing rather than assuming 1x when the group multiplier is unknown', async () => {
+    estimateProxyCostMock.mockResolvedValue(0.01);
+    buildProxyBillingDetailsMock.mockResolvedValue({
+      usage: {
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        billablePromptTokens: 100,
+      },
+      pricing: {
+        modelRatio: 1,
+        completionRatio: 1,
+        cacheRatio: 1,
+        cacheCreationRatio: 1,
+        groupRatio: 1,
+      },
+      breakdown: {
+        inputPerMillion: 1,
+        outputPerMillion: 1,
+        cacheReadPerMillion: 1,
+        cacheCreationPerMillion: 1,
+        totalCost: 0.01,
+      },
+    });
+
+    const result = await resolveProxyLogBilling({
+      site: { id: 5, url: 'https://api.example.com', platform: 'new-api' },
+      account: { id: 6 },
+      modelName: 'gpt-5',
+      tokenGroup: 'mystery',
+      parsedUsage: {
+        promptTokens: 100,
+        completionTokens: 0,
+        totalTokens: 100,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        promptTokensIncludeCache: true,
+      },
+      resolvedUsage: {
+        promptTokens: 100,
+        completionTokens: 0,
+        totalTokens: 100,
+        recoveredFromSelfLog: false,
+        estimatedCostFromQuota: 0,
+        selfLogBillingMeta: null,
+      },
+    });
+
+    expect(result.billingDetails?.tokenGroupRate).toBeUndefined();
   });
 });

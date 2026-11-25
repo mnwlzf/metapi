@@ -56,6 +56,7 @@ let proxyLogBillingDetailsColumnAvailable: boolean | null = null;
 let proxyLogCacheTokensColumnsAvailable: boolean | null = null;
 let proxyLogReasoningEffortColumnAvailable: boolean | null = null;
 let proxyLogResponseModelColumnAvailable: boolean | null = null;
+let proxyLogTokenGroupRateColumnAvailable: boolean | null = null;
 let proxyLogDownstreamApiKeyIdColumnAvailable: boolean | null = null;
 let proxyLogClientColumnsAvailable: boolean | null = null;
 let proxyLogStreamTimingColumnsAvailable: boolean | null = null;
@@ -910,6 +911,33 @@ export async function hasProxyLogCacheTokensColumns(): Promise<boolean> {
   return proxyLogCacheTokensColumnsAvailable;
 }
 
+export async function hasProxyLogTokenGroupRateColumn(): Promise<boolean> {
+  if (proxyLogTokenGroupRateColumnAvailable !== null) {
+    return proxyLogTokenGroupRateColumnAvailable;
+  }
+
+  if (runtimeDbDialect === 'sqlite') {
+    proxyLogTokenGroupRateColumnAvailable = tableExists('proxy_logs')
+      && tableColumnExists('proxy_logs', 'token_group_rate');
+    return proxyLogTokenGroupRateColumnAvailable;
+  }
+
+  if (runtimeDbDialect === 'mysql') {
+    if (!mysqlPool) return false;
+    const [rows] = await mysqlPool.query('SHOW COLUMNS FROM `proxy_logs` LIKE ?', ['token_group_rate']);
+    proxyLogTokenGroupRateColumnAvailable = Array.isArray(rows) && rows.length > 0;
+    return proxyLogTokenGroupRateColumnAvailable;
+  }
+
+  if (!pgPool) return false;
+  const result = await pgPool.query(
+    'SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2 LIMIT 1',
+    ['proxy_logs', 'token_group_rate'],
+  );
+  proxyLogTokenGroupRateColumnAvailable = Number(result.rowCount || 0) > 0;
+  return proxyLogTokenGroupRateColumnAvailable;
+}
+
 export async function hasProxyLogTokenIdColumn(): Promise<boolean> {
   if (proxyLogTokenIdColumnAvailable !== null) {
     return proxyLogTokenIdColumnAvailable;
@@ -1067,6 +1095,47 @@ export async function ensureProxyLogResponseModelColumn(): Promise<boolean> {
       return true;
     }
     proxyLogResponseModelColumnAvailable = false;
+    return false;
+  }
+}
+
+export async function ensureProxyLogTokenGroupRateColumn(): Promise<boolean> {
+  if (runtimeDbDialect === 'sqlite') {
+    if (tableExists('proxy_logs')) {
+      if (!tableColumnExists('proxy_logs', 'token_group_rate')) {
+        execSqliteLegacyCompat('ALTER TABLE proxy_logs ADD COLUMN token_group_rate real;');
+      }
+      proxyLogTokenGroupRateColumnAvailable = true;
+    }
+    return proxyLogTokenGroupRateColumnAvailable === true;
+  }
+
+  if (await hasProxyLogTokenGroupRateColumn()) {
+    return true;
+  }
+
+  try {
+    if (runtimeDbDialect === 'mysql') {
+      if (!mysqlPool) return false;
+      await executeLegacyCompat(
+        (statement) => mysqlPool!.query(statement).then(() => undefined),
+        'ALTER TABLE `proxy_logs` ADD COLUMN `token_group_rate` DOUBLE',
+      );
+    } else {
+      if (!pgPool) return false;
+      await executeLegacyCompat(
+        (statement) => pgPool!.query(statement).then(() => undefined),
+        'ALTER TABLE "proxy_logs" ADD COLUMN "token_group_rate" double precision',
+      );
+    }
+    proxyLogTokenGroupRateColumnAvailable = true;
+    return true;
+  } catch (error) {
+    if (isDuplicateColumnError(error)) {
+      proxyLogTokenGroupRateColumnAvailable = true;
+      return true;
+    }
+    proxyLogTokenGroupRateColumnAvailable = false;
     return false;
   }
 }

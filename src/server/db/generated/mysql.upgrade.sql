@@ -1,1 +1,1 @@
-ALTER TABLE `downstream_api_keys` ADD COLUMN `max_upstream_rate` DOUBLE;
+ALTER TABLE `proxy_logs` ADD COLUMN `token_group_rate` DOUBLE;

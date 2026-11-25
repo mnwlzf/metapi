@@ -310,6 +310,14 @@ export const proxyLogs = sqliteTable('proxy_logs', {
   // `reasoning_effort`, responses: `reasoning.effort`). Display-only — nothing
   // in the routing or billing path branches on it.
   reasoningEffort: text('reasoning_effort'),
+  // The token group's upstream consumption multiplier THIS request billed at.
+  //
+  // Persisted per row on purpose: upstream reprices groups at will, and the
+  // multiplier only lives in short-lived (5-10 minute) metadata caches, so a
+  // read-time re-derivation answers "unknown" for older rows and — worse —
+  // relabels a request made at 0.01x with today's 0.20x. Null means the
+  // multiplier was genuinely unknown when the row was written; never 1x.
+  tokenGroupRate: real('token_group_rate'),
   estimatedCost: real('estimated_cost'),
   billingDetails: text('billing_details'),
   clientFamily: text('client_family'),

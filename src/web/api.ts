@@ -401,6 +401,17 @@ export type ProxyLogBillingDetails = {
     groupRate: number;
     source: 'catalog';
   };
+  /**
+   * The token group's upstream multiplier as resolved while billing, with the
+   * metadata source it came from. Fallback for the log's rate column when the
+   * live lookup cannot reach upstream metadata any more (both sources are 5-10
+   * minute in-memory caches, so that is the normal state for older rows).
+   */
+  tokenGroupRate?: {
+    rate: number;
+    source: 'pricing' | 'catalog';
+    groupKey: string;
+  };
   quotaType: number;
   usage: {
     promptTokens: number;
@@ -456,9 +467,18 @@ export type ProxyLogListItem = {
   downstreamKeyGroupName?: string | null;
   /** The key's configured upstream rate ceiling (`max_upstream_rate`), null = none. */
   downstreamKeyMaxUpstreamRate?: number | null;
-  /** Rate multiplier of the token's upstream group, resolved at read time. */
+  /**
+   * The token group's multiplier this request was billed at. Persisted per row,
+   * because upstream reprices groups over time — a request made at 0.01x must
+   * keep saying 0.01x after the group moves to 0.20x.
+   */
   tokenGroupRate?: number | null;
-  tokenGroupRateSource?: 'pricing' | 'catalog' | null;
+  /**
+   * Where `tokenGroupRate` came from: the value recorded with this request
+   * (`log`), or a live metadata lookup for rows that recorded nothing
+   * (`pricing` rate table / `catalog` group list).
+   */
+  tokenGroupRateSource?: 'pricing' | 'catalog' | 'log' | null;
   tokenGroup?: string | null;
   downstreamKeyTags?: string[];
   clientFamily?: string | null;

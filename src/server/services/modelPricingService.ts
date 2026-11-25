@@ -159,6 +159,23 @@ export interface ProxyBillingDetails {
     groupRate: number;
     source: 'catalog';
   };
+  /**
+   * The token group's upstream consumption multiplier as resolved at billing
+   * time, with the metadata source it came from.
+   *
+   * This is a snapshot of a *decision*, not a live lookup: the multiplier lives
+   * in upstream metadata caches with a 5-10 minute TTL, so re-resolving it when
+   * a log row is read reports "unknown" for any request older than that (and for
+   * every request after a restart). Recording it here keeps the log honest about
+   * what the hop was priced at. Absent means "we did not know it then" — never
+   * assume 1x.
+   */
+  tokenGroupRate?: {
+    rate: number;
+    source: 'pricing' | 'catalog';
+    /** The upstream group key the rate was resolved for (id on sub2api, name on new-api). */
+    groupKey: string;
+  };
   /** What the local price model computed, persisted even when a quota overrode it. */
   computedTotalCost?: number;
   /** Upstream's own charge, when its usage log reported one. */

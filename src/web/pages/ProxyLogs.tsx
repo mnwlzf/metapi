@@ -1791,9 +1791,9 @@ export default function ProxyLogs() {
                       ) : null}
                       <MobileField
                         label={tr('账号分组倍率')}
-                        value={typeof detailLog.tokenGroupRate === 'number'
+                        value={`${typeof detailLog.tokenGroupRate === 'number'
                           ? formatCompactNumber(detailLog.tokenGroupRate)
-                          : tr('未知')}
+                          : tr('未知')}${detailLog.tokenGroupRateSource === 'log' ? ` ${tr('（请求时倍率）')}` : ''}`}
                       />
                       <MobileField
                         label={tr('密钥倍率上限')}
@@ -2430,6 +2430,9 @@ export default function ProxyLogs() {
                                         </strong>
                                         {detailLog.tokenGroupRateSource === 'catalog'
                                           ? <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{tr('（站点分组表）')}</span>
+                                          : null}
+                                        {detailLog.tokenGroupRateSource === 'log'
+                                          ? <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{tr('（请求时倍率）')}</span>
                                           : null}
                                       </div>
                                       <div>{tr('密钥倍率上限：')}<strong style={{ color: 'var(--color-text-primary)' }}>

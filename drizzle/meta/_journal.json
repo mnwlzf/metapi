@@ -358,6 +358,13 @@
       "when": 1795478400000,
       "tag": "0051_downstream_api_key_max_upstream_rate",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "6",
+      "when": 1795571500040,
+      "tag": "0052_proxy_log_token_group_rate",
+      "breakpoints": true
     }
   ]
 }

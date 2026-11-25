@@ -1,3 +1,5 @@
+import { eq } from 'drizzle-orm';
+import { db, schema } from '../db/index.js';
 import { peekAccountGroupCatalog, requestAccountGroupCatalogWarmup, resolveTokenGroupDisplay } from './accountGroupCatalogService.js';
 import { getCachedGroupRate, requestRoutingReferenceCostWarmup } from './modelPricingService.js';
 
@@ -99,6 +101,75 @@ export function requestUpstreamGroupRateWarmup(input: UpstreamGroupRateInput): v
     },
     modelName: String(input.modelName ?? input.channel?.sourceModel ?? '').trim(),
   });
+}
+
+const READ_WARMUP_RETRY_MS = 60 * 1000;
+const readWarmupAttempts = new Map<number, number>();
+
+export function __resetUpstreamGroupRateReadWarmupForTests(): void {
+  readWarmupAttempts.clear();
+}
+
+/**
+ * Warm the same two sources from a *read* path (the usage log), where only the
+ * account id is at hand.
+ *
+ * Routing warms on its own miss, but log rendering used to only peek at the
+ * caches: after a restart, or once the 5-10 minute TTLs lapsed, every page load
+ * re-read the same cold cache and the multiplier stayed unknown forever. This
+ * loads the account/site row once and hands it to `requestUpstreamGroupRateWarmup`.
+ *
+ * Frequency is bounded twice on purpose:
+ * - this throttle allows at most one attempt per account per minute, so a page
+ *   of 50 log rows costs one attempt (and re-rendering costs none);
+ * - both callees skip the fetch entirely while their own TTL is still valid, so
+ *   the upstream is actually queried at most once per TTL, not once per minute.
+ * A live multiplier is preferred over any stored value precisely because
+ * upstream may reprice a group at any time; that is also why this refreshes
+ * instead of trusting whatever was recorded at billing time.
+ */
+export function requestUpstreamGroupRateReadWarmup(accountId: number): void {
+  const id = Number(accountId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const now = Date.now();
+  const lastAttempt = readWarmupAttempts.get(id) ?? 0;
+  if (now - lastAttempt < READ_WARMUP_RETRY_MS) return;
+  readWarmupAttempts.set(id, now);
+
+  void (async () => {
+    const row = await db
+      .select({
+        siteId: schema.sites.id,
+        siteUrl: schema.sites.url,
+        sitePlatform: schema.sites.platform,
+        accessToken: schema.accounts.accessToken,
+        apiToken: schema.accounts.apiToken,
+      })
+      .from(schema.accounts)
+      .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+      .where(eq(schema.accounts.id, id))
+      .get();
+
+    if (!row) {
+      // Account gone: the catalog source is still worth a try (it looks the row
+      // up again itself and no-ops when it is missing).
+      requestAccountGroupCatalogWarmup(id);
+      return;
+    }
+
+    requestUpstreamGroupRateWarmup({
+      site: {
+        id: Number(row.siteId),
+        url: row.siteUrl ?? null,
+        platform: row.sitePlatform ?? null,
+      },
+      account: {
+        id,
+        accessToken: row.accessToken ?? null,
+        apiToken: row.apiToken ?? null,
+      },
+    });
+  })().catch(() => {});
 }
 
 /** Comparison tolerance: multipliers are decimal ratios published by upstream. */

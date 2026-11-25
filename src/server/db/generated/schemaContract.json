@@ -1415,6 +1415,12 @@
           "notNull": false,
           "defaultValue": null,
           "primaryKey": false
+        },
+        "token_group_rate": {
+          "logicalType": "real",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
         }
       }
     },

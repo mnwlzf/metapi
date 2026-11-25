@@ -634,7 +634,7 @@ function buildStatements(
   for (const row of snapshot.accounts.proxyLogs) {
     statements.push({
       table: 'proxy_logs',
-      columns: ['id', 'route_id', 'channel_id', 'account_id', 'downstream_api_key_id', 'token_id', 'model_requested', 'model_actual', 'response_model', 'status', 'http_status', 'is_stream', 'first_byte_latency_ms', 'latency_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'reasoning_effort', 'estimated_cost', 'billing_details', 'client_family', 'client_app_id', 'client_app_name', 'client_confidence', 'error_message', 'request_trace_id', 'retry_count', 'created_at'],
+      columns: ['id', 'route_id', 'channel_id', 'account_id', 'downstream_api_key_id', 'token_id', 'model_requested', 'model_actual', 'response_model', 'status', 'http_status', 'is_stream', 'first_byte_latency_ms', 'latency_ms', 'prompt_tokens', 'completion_tokens', 'total_tokens', 'cache_read_tokens', 'cache_creation_tokens', 'reasoning_effort', 'token_group_rate', 'estimated_cost', 'billing_details', 'client_family', 'client_app_id', 'client_app_name', 'client_confidence', 'error_message', 'request_trace_id', 'retry_count', 'created_at'],
       values: [
         asNumber(row.id, 0),
         asNumber(row.routeId, null),
@@ -656,6 +656,7 @@ function buildStatements(
         asNumber(row.cacheReadTokens, null),
         asNumber(row.cacheCreationTokens, null),
         asNullableString(row.reasoningEffort),
+        asNumber(row.tokenGroupRate, null),
         asNumber(row.estimatedCost, null),
         serializeColumnValue('proxy_logs', 'billing_details', row.billingDetails, contract),
         asNullableString(row.clientFamily),

@@ -1131,6 +1131,178 @@ describe('stats proxy logs routes', () => {
     expect(standalone?.retryCount).toBe(0);
   });
 
+  it('prefers the live group multiplier, falls back to the billing snapshot, and keeps it out of the list payload', async () => {
+    const site = await db
+      .insert(schema.sites)
+      .values({
+        name: 'snapshot-site',
+        url: 'https://snapshot.example.com',
+        platform: 'sub2api',
+      })
+      .returning()
+      .get();
+
+    const account = await db
+      .insert(schema.accounts)
+      .values({
+        siteId: site.id,
+        username: 'snapshot-user',
+        accessToken: 'snapshot-token',
+        status: 'active',
+      })
+      .returning()
+      .get();
+
+    const token = await db
+      .insert(schema.accountTokens)
+      .values({
+        accountId: account.id,
+        name: 'deepseek分组',
+        token: 'sk-upstream-270',
+        tokenGroup: '270',
+      })
+      .returning()
+      .get();
+
+    const downstreamKey = await db
+      .insert(schema.downstreamApiKeys)
+      .values({
+        name: 'deepseek-0.3',
+        key: 'sk-downstream-03',
+        groupName: 'deepseek',
+        maxUpstreamRate: 0.3,
+      })
+      .returning()
+      .get();
+
+    const inserted = await db
+      .insert(schema.proxyLogs)
+      .values({
+        accountId: account.id,
+        tokenId: token.id,
+        downstreamApiKeyId: downstreamKey.id,
+        modelRequested: 'deepseek-v4.1-flash',
+        modelActual: 'deepseek-v4.1-flash',
+        status: 'success',
+        totalTokens: 1600,
+        estimatedCost: 0.000061,
+        // The multiplier was known while billing; the metadata caches that
+        // produced it are gone by now (5-10 minute TTL, in-memory only).
+        billingDetails: JSON.stringify({
+          basis: 'upstream-quota',
+          platform: 'sub2api',
+          computedTotalCost: 0.000221,
+          tokenGroupRate: { rate: 0.12, source: 'catalog', groupKey: '270' },
+        }),
+        createdAt: formatUtcSqlDateTime(new Date('2026-03-09T13:00:00.000Z')),
+      })
+      .run();
+
+    const logId = Number(inserted.lastInsertRowid || 0);
+    const listResponse = await app.inject({ method: 'GET', url: '/api/stats/proxy-logs' });
+    const detailResponse = await app.inject({ method: 'GET', url: `/api/stats/proxy-logs/${logId}` });
+
+    expect(listResponse.statusCode).toBe(200);
+    expect(detailResponse.statusCode).toBe(200);
+
+    const listItem = (listResponse.json() as {
+      items: Array<Record<string, unknown>>;
+    }).items[0]!;
+    // The rate survives the cold cache, and says where it came from.
+    expect(listItem.tokenGroupRate).toBe(0.12);
+    expect(listItem.tokenGroupRateSource).toBe('log');
+    expect(listItem.downstreamKeyMaxUpstreamRate).toBe(0.3);
+    // The list only reads the snapshot out of `billing_details`; the full
+    // payload stays detail-only.
+    expect(listItem.billingDetails).toBeUndefined();
+
+    const detailBody = detailResponse.json() as Record<string, unknown>;
+    expect(detailBody.tokenGroupRate).toBe(0.12);
+    expect(detailBody.tokenGroupRateSource).toBe('log');
+    expect(detailBody.billingDetails).toMatchObject({
+      basis: 'upstream-quota',
+      computedTotalCost: 0.000221,
+      tokenGroupRate: { rate: 0.12, source: 'catalog', groupKey: '270' },
+    });
+  });
+
+  it('keeps the group rate each request billed at, even after upstream reprices the group', async () => {
+    const site = await db
+      .insert(schema.sites)
+      .values({
+        name: 'repriced-site',
+        url: 'https://repriced.example.com',
+        platform: 'sub2api',
+      })
+      .returning()
+      .get();
+
+    const account = await db
+      .insert(schema.accounts)
+      .values({
+        siteId: site.id,
+        username: 'repriced-user',
+        accessToken: 'repriced-token',
+        status: 'active',
+      })
+      .returning()
+      .get();
+
+    const token = await db
+      .insert(schema.accountTokens)
+      .values({
+        accountId: account.id,
+        name: 'deepseek分组',
+        token: 'sk-upstream-270',
+        tokenGroup: '270',
+      })
+      .returning()
+      .get();
+
+    // Same group, two requests made before and after the upstream repriced it
+    // from 0.01x to 0.20x. Each row must keep its own historical multiplier:
+    // reading the group's *current* rate would relabel the old charge.
+    await db.insert(schema.proxyLogs).values([
+      {
+        accountId: account.id,
+        tokenId: token.id,
+        modelRequested: 'deepseek-v4.1-flash',
+        modelActual: 'deepseek-v4.1-flash',
+        status: 'success',
+        totalTokens: 1600,
+        estimatedCost: 0.000061,
+        tokenGroupRate: 0.01,
+        createdAt: formatUtcSqlDateTime(new Date('2026-03-09T13:10:00.000Z')),
+      },
+      {
+        accountId: account.id,
+        tokenId: token.id,
+        modelRequested: 'deepseek-v4.1-flash',
+        modelActual: 'deepseek-v4.1-flash',
+        status: 'success',
+        totalTokens: 1600,
+        estimatedCost: 0.00122,
+        tokenGroupRate: 0.2,
+        createdAt: formatUtcSqlDateTime(new Date('2026-03-09T13:20:00.000Z')),
+      },
+    ]).run();
+
+    const response = await app.inject({ method: 'GET', url: '/api/stats/proxy-logs' });
+    expect(response.statusCode).toBe(200);
+
+    const items = (response.json() as {
+      items: Array<Record<string, unknown>>;
+    }).items;
+    const rates = items
+      .map((item) => ({ rate: item.tokenGroupRate, source: item.tokenGroupRateSource }))
+      .sort((a, b) => Number(a.rate) - Number(b.rate));
+
+    expect(rates).toEqual([
+      { rate: 0.01, source: 'log' },
+      { rate: 0.2, source: 'log' },
+    ]);
+  });
+
   it('writes the 406 head once and logs no header errors on the SSE stream route', async () => {
     // /api/stats/proxy-logs/stream answers 406 unless the client asks for
     // text/event-stream. The app carries the two promise-returning onSend hooks

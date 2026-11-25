@@ -4,6 +4,7 @@ import {
   type ProxyBillingDetails,
   type ProxyBillingPricingOverride,
 } from './modelPricingService.js';
+import { resolveUpstreamGroupRate } from './upstreamGroupRateResolver.js';
 import type { SelfLogBillingMeta } from './proxyUsageFallbackService.js';
 
 interface ProxyBillingUsageSummary {
@@ -112,6 +113,23 @@ export async function resolveProxyLogBilling(
     billingDetails.basis = quotaApplied ? 'upstream-quota' : billingDetails.estimateBasis;
     if (quotaAmount > 0) {
       billingDetails.quota = { amount: quotaAmount, applied: quotaApplied };
+    }
+    // Snapshot the group multiplier now, while the metadata caches that hold it
+    // are warm. Re-resolving it when the log row is opened (minutes or days
+    // later) reads those caches again and honestly reports "unknown" once the
+    // 5-10 minute TTL has passed, which made the log's rate column show "?"
+    // for requests that *did* bill at a known multiplier.
+    const groupRate = resolveUpstreamGroupRate({
+      site: { id: input.site.id },
+      account: { id: input.account.id },
+      token: { tokenGroup: input.tokenGroup ?? null },
+    });
+    if (groupRate.known) {
+      billingDetails.tokenGroupRate = {
+        rate: groupRate.rate,
+        source: groupRate.source,
+        groupKey: groupRate.groupKey,
+      };
     }
   }
 
