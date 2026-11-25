@@ -158,6 +158,9 @@ describe('backupService', () => {
     await db.insert(schema.siteDisabledModels).values({
       siteId: site.id,
       modelName: 'gpt-hidden',
+      // Operator-disabled: the provenance has to survive an export/import so the
+      // restored row is not silently auto-recoverable.
+      source: 'manual',
       createdAt: now,
     }).run();
 
@@ -229,7 +232,7 @@ describe('backupService', () => {
     const exported = await backupService.exportBackup('all') as any;
     expect(exported.version).toBe('2.1');
     expect(exported.accounts.siteDisabledModels).toEqual([
-      { siteId: site.id, accountId: null, modelName: 'gpt-hidden' },
+      { siteId: site.id, accountId: null, modelName: 'gpt-hidden', source: 'manual' },
     ]);
     expect(exported.accounts.siteApiEndpoints).toEqual([
       expect.objectContaining({
@@ -312,7 +315,7 @@ describe('backupService', () => {
     expect(restoredChannel?.sourceModel).toBe('gpt-4o');
     expect(restoredChannel?.requestOverrideRules).toBe('{"temperature":0.2}');
     expect(restoredDisabledModels).toEqual([
-      expect.objectContaining({ siteId: site.id, modelName: 'gpt-hidden' }),
+      expect.objectContaining({ siteId: site.id, modelName: 'gpt-hidden', source: 'manual' }),
     ]);
     expect(restoredModelAvailability.some((row) => row.modelName === 'gpt-manual' && row.isManual)).toBe(true);
     expect(restoredModelAvailability.some((row) => row.modelName === 'gpt-discovered' && !row.isManual)).toBe(true);

@@ -2,6 +2,19 @@ import { and, eq, inArray, isNull } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
 
+/**
+ * Provenance of a disable row.
+ *
+ * `probe` rows are a *verdict about reachability* and are reverted automatically
+ * once the model answers again; `manual` (operator intent) and `policy`
+ * (new-model policy) are not.
+ */
+export type SiteDisabledModelSource = 'probe' | 'manual' | 'policy';
+
+/** Disable rows a successful probe is allowed to undo: its own, plus legacy
+ *  rows written before provenance was recorded (same writer, unknown label). */
+export const AUTO_RECOVERABLE_DISABLE_SOURCES = ['probe'] as const;
+
 export type SiteDisabledModelsIndex = Map<number, {
   // Legacy site-wide rows (account_id NULL) — kept for backward compatibility;
   // after the v1.8 boot-time fan-out all such rows are deleted so this is empty.
@@ -60,6 +73,9 @@ export async function fanoutSiteWideDisabledModels(): Promise<void> {
   const siteWideRows = await db.select({
     siteId: schema.siteDisabledModels.siteId,
     modelName: schema.siteDisabledModels.modelName,
+    // Provenance must survive the fan-out: a probe-written site-wide row that
+    // lost its source would become permanently sticky.
+    source: schema.siteDisabledModels.source,
   }).from(schema.siteDisabledModels)
     .where(isNull(schema.siteDisabledModels.accountId))
     .all();
@@ -67,16 +83,16 @@ export async function fanoutSiteWideDisabledModels(): Promise<void> {
   if (siteWideRows.length === 0) return;
 
   // Group by site.
-  const bySite = new Map<number, string[]>();
+  const bySite = new Map<number, Array<{ modelName: string; source: string | null }>>();
   for (const row of siteWideRows) {
     const siteId = Number(row.siteId);
     if (!Number.isFinite(siteId) || siteId <= 0) continue;
     const models = bySite.get(siteId) ?? [];
-    models.push(row.modelName);
+    models.push({ modelName: row.modelName, source: row.source ?? null });
     bySite.set(siteId, models);
   }
 
-  for (const [siteId, modelNames] of bySite) {
+  for (const [siteId, fanoutRows] of bySite) {
     const accounts = await db.select({ id: schema.accounts.id })
       .from(schema.accounts)
       .where(eq(schema.accounts.siteId, siteId))
@@ -107,11 +123,11 @@ export async function fanoutSiteWideDisabledModels(): Promise<void> {
     );
 
     // Fan out.
-    const values: Array<{ siteId: number; accountId: number; modelName: string }> = [];
+    const values: Array<{ siteId: number; accountId: number; modelName: string; source: string | null }> = [];
     for (const account of accounts) {
-      for (const modelName of modelNames) {
-        if (existing.has(`${account.id}::${normalizeRawModelName(modelName)}`)) continue;
-        values.push({ siteId, accountId: account.id, modelName });
+      for (const row of fanoutRows) {
+        if (existing.has(`${account.id}::${normalizeRawModelName(row.modelName)}`)) continue;
+        values.push({ siteId, accountId: account.id, modelName: row.modelName, source: row.source });
       }
     }
     if (values.length > 0) {
@@ -167,6 +183,68 @@ export async function loadSiteDisabledModelsIndex(): Promise<SiteDisabledModelsI
     }
   }
   return index;
+}
+
+/**
+ * Undo probe-written disables for models that just answered.
+ *
+ * A disable row used to be one-way: the probe could add it, but nothing — not a
+ * later successful probe, not the periodic model refresh, not a route rebuild —
+ * ever removed it. The model stayed out of routing even after it recovered, and
+ * only the per-key editor could put it back. A confirmed success is the same
+ * kind of evidence the disable was based on, so it now reverts exactly the rows
+ * the probe wrote ('probe', plus NULL from before provenance existed) and leaves
+ * operator/policy intent alone.
+ *
+ * Exact-name matching is deliberate: these rows are written from the very model
+ * list the probe iterates, so the spelling is identical (canonical matching
+ * would risk reverting a differently-named sibling).
+ */
+export async function clearAutoDisabledModels(input: {
+  siteId: number;
+  accountId?: number | null;
+  modelNames: string[];
+}): Promise<string[]> {
+  const siteId = Number(input.siteId);
+  if (!Number.isFinite(siteId) || siteId <= 0) return [];
+
+  const modelNames = Array.from(new Set(
+    input.modelNames
+      .map((name) => String(name || '').trim())
+      .filter((name) => name.length > 0),
+  ));
+  if (modelNames.length === 0) return [];
+
+  const rawAccountId = input.accountId == null ? null : Number(input.accountId);
+  const accountScope = rawAccountId != null && Number.isFinite(rawAccountId) && rawAccountId > 0
+    ? eq(schema.siteDisabledModels.accountId, rawAccountId)
+    : isNull(schema.siteDisabledModels.accountId);
+
+  // Read first, then delete by id: `DELETE ... RETURNING` is not portable across
+  // the supported dialects, and the caller wants the names for its progress log.
+  const candidates = await db.select({
+    id: schema.siteDisabledModels.id,
+    modelName: schema.siteDisabledModels.modelName,
+    source: schema.siteDisabledModels.source,
+  })
+    .from(schema.siteDisabledModels)
+    .where(and(
+      eq(schema.siteDisabledModels.siteId, siteId),
+      accountScope,
+      inArray(schema.siteDisabledModels.modelName, modelNames),
+    ))
+    .all();
+
+  const removable = candidates.filter((row) => (
+    row.source == null || row.source === AUTO_RECOVERABLE_DISABLE_SOURCES[0]
+  ));
+  if (removable.length === 0) return [];
+
+  await db.delete(schema.siteDisabledModels)
+    .where(inArray(schema.siteDisabledModels.id, removable.map((row) => row.id)))
+    .run();
+
+  return removable.map((row) => String(row.modelName));
 }
 
 function matches(entry: { raw: Set<string>; canonicalFree: Set<string>; canonicalNonFree: Set<string> }, modelName: string): boolean {

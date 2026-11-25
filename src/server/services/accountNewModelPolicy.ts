@@ -141,6 +141,9 @@ export async function applyNewModelPolicyForAccount(
           siteId: account.siteId,
           accountId,
           modelName,
+          // Policy intent, not a reachability verdict: a later successful probe
+          // must not silently re-enable models the operator asked to keep out.
+          source: 'policy',
         })))
         .onConflictDoNothing()
         .run();

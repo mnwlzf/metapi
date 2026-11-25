@@ -750,8 +750,13 @@ export default function Sites() {
             setTimeout(() => probeLogEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 30);
           } else if (type === 'action') {
             if (d.action === 'disabled') addLog(`  ↳ ${tr('已加入该 key 的禁用列表')}: ${d.modelName}`, 'var(--color-text-muted)');
+            else if (d.action === 'enabled') addLog(`  ↳ ${tr('探测成功，已自动恢复（移出禁用列表）')}: ${d.modelName}`, 'var(--color-success)');
           } else if (type === 'complete') {
             const inconclusiveCount = Number(d.inconclusive || 0);
+            const recoveredCount = Number(d.recovered || 0);
+            if (recoveredCount > 0) {
+              addLog(`已自动恢复 ${recoveredCount} 个模型（本次探测成功，已移出禁用列表并重建路由）`, 'var(--color-success)');
+            }
             if (d.unsupported > 0) {
               addLog(`完成：${d.probed} 个模型已探测，${d.unsupported} 个不可用已自动加入禁用列表`, 'var(--color-danger)');
               toast.error(`${d.unsupported} 个模型不可用，已自动加入禁用列表`);

@@ -1969,6 +1969,12 @@
           "notNull": false,
           "defaultValue": null,
           "primaryKey": false
+        },
+        "source": {
+          "logicalType": "text",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
         }
       }
     },

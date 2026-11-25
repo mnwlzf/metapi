@@ -65,12 +65,22 @@ const DEFINITE_UNSUPPORTED_PATTERNS = [
   /unknown model/i,
   /unsupported model/i,
   /invalid model/i,
-  /model[^]{0,80}(does not exist|not found|not available|unavailable|unsupported|invalid|disabled)/i,
+  // Underscore/JSON-code spellings ("model_not_found") never match the
+  // space-separated phrases above.
+  /model_not_found/i,
+  /model[^]{0,80}(does not exist|not found|not available|unavailable|unsupported|not supported|invalid|disabled)/i,
   /(does not exist|not found|not available|unavailable|unsupported|invalid|disabled)[^]{0,40}model/i,
+  // Relays that answer "no channel for this model" (new-api/one-api wording).
+  /no available (channel|provider)/i,
+  /(没有|无)可用(的)?(渠道|通道)/,
   /模型[^]{0,40}(不存在|不可用|不支持|无效|禁用|未开通|未开放)/,
   /(不存在|不可用|不支持|无效|禁用)[^]{0,20}模型/,
   /model[^]{0,80}(access denied|permission|forbidden|not allowed)/i,
   /模型[^]{0,40}(无权限|未授权|禁止访问)/,
+  // A bare denial ("无权限") belongs to the request that was rejected. The row
+  // it writes is per-key, so scoping the disable to this key is right even when
+  // the upstream meant "this key may not use it" rather than "the model is gone".
+  /无权限|没有权限|无权访问|未授权/,
 ];
 
 function isLikelyConversationModel(modelName: string): boolean {
@@ -80,8 +90,22 @@ function isLikelyConversationModel(modelName: string): boolean {
   return !NON_CONVERSATION_MODEL_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
-function classifyUnsupportedFailure(status: number, rawErrorText: string): boolean {
-  if (![400, 403, 404, 422].includes(status)) return false;
+/**
+ * A failure proves the model itself is not available — as opposed to a
+ * transport/timeout/quota problem that says nothing about the model.
+ *
+ * Relay gateways are not tidy about status codes: many answer 500/502/503 for
+ * "this model does not exist / has no channel". Since 5xx used to fall straight
+ * into "inconclusive", a whole site could sweep to "no verdict" while the
+ * upstream was in fact rejecting every one of those models. The text still has
+ * to name the model, and a wrong verdict is now reverted by the next successful
+ * probe (see clearAutoDisabledModels), so the wider status set is affordable.
+ * 429 stays out: rate limiting is not a statement about the model.
+ */
+const DEFINITE_UNSUPPORTED_STATUSES = new Set([400, 403, 404, 422, 500, 502, 503, 504]);
+
+export function classifyUnsupportedFailure(status: number, rawErrorText: string): boolean {
+  if (!DEFINITE_UNSUPPORTED_STATUSES.has(status)) return false;
   const normalized = String(rawErrorText || '').trim();
   if (!normalized) return false;
   return DEFINITE_UNSUPPORTED_PATTERNS.some((pattern) => pattern.test(normalized));

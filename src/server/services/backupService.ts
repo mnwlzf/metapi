@@ -87,6 +87,8 @@ type BackupRouteChannelRow = Omit<RouteChannelRow,
 type BackupSiteDisabledModelRow = Pick<SiteDisabledModelRow, 'siteId' | 'modelName'> & {
   /** Nullable: absent in backups written before per-key disabling. */
   accountId?: number | null;
+  /** Nullable: absent in backups written before provenance was recorded. */
+  source?: string | null;
 };
 type BackupManualModelRow = {
   accountId: number;
@@ -1408,6 +1410,7 @@ async function exportAccountsSection(): Promise<AccountsBackupSection> {
       siteId: row.siteId,
       accountId: row.accountId ?? null,
       modelName: row.modelName,
+      source: row.source ?? null,
     })),
     manualModels: manualModels.map((row) => ({
       accountId: row.accountId,
@@ -1743,6 +1746,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
           siteId: row.siteId,
           accountId: row.accountId ?? null,
           modelName: row.modelName,
+          source: row.source ?? null,
         }).run();
       }
     }

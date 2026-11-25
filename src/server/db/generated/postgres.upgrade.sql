@@ -1,1 +1,1 @@
-ALTER TABLE "proxy_logs" ADD COLUMN "token_group_rate" DOUBLE PRECISION;
+ALTER TABLE "site_disabled_models" ADD COLUMN "source" TEXT;

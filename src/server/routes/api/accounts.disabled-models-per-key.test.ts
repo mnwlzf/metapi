@@ -62,7 +62,11 @@ describe('per-key disabled models', () => {
     const rows = await db.select().from(schema.siteDisabledModels)
       .where(eq(schema.siteDisabledModels.siteId, siteId)).all();
     return rows
-      .map((r: any) => ({ accountId: r.accountId ?? null, modelName: r.modelName }))
+      .map((r: any) => ({
+        accountId: r.accountId ?? null,
+        modelName: r.modelName,
+        source: r.source ?? null,
+      }))
       .sort((a: any, b: any) => {
         const left = a.accountId ?? -1;
         const right = b.accountId ?? -1;
@@ -85,10 +89,11 @@ describe('per-key disabled models', () => {
     });
     expect(resB.statusCode).toBe(200);
 
-    // Saving key B must not have wiped key A's set.
+    // Saving key B must not have wiped key A's set. Rows saved here are operator
+    // intent (`manual`), so a later successful probe must leave them alone.
     expect(await disabledRowsFor(site.id)).toEqual([
-      { accountId: keyA.id, modelName: 'only-a' },
-      { accountId: keyB.id, modelName: 'shared-model' },
+      { accountId: keyA.id, modelName: 'only-a', source: 'manual' },
+      { accountId: keyB.id, modelName: 'shared-model', source: 'manual' },
     ]);
 
     const listA = (await app.inject({ method: 'GET', url: `/api/accounts/${keyA.id}/models` })).json();
@@ -130,9 +135,9 @@ describe('per-key disabled models', () => {
     expect(res.statusCode).toBe(200);
 
     expect(await disabledRowsFor(site.id)).toEqual([
-      { accountId: null, modelName: 'shared-model' },
-      { accountId: keyA.id, modelName: 'only-a' },
-      { accountId: keyB.id, modelName: 'only-b' },
+      { accountId: null, modelName: 'shared-model', source: null },
+      { accountId: keyA.id, modelName: 'only-a', source: 'manual' },
+      { accountId: keyB.id, modelName: 'only-b', source: null },
     ]);
   });
 

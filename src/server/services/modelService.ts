@@ -26,6 +26,7 @@ import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
 import { canonicalRouteAlias, collectGroupNameOwners, resolveExposedRouteName } from '../shared/routeGroupName.js';
 import { isCodexGatedPlatform } from '../shared/codexGatedPlatforms.js';
 import {
+  clearAutoDisabledModels,
   isModelDisabledForSite,
   loadSiteDisabledModelsIndex,
 } from './siteDisabledModels.js';
@@ -299,13 +300,15 @@ export type ProbeSiteModelsResult = {
   probed: number;
   unsupported: number;
   inconclusive: number;
+  /** Models whose probe-written disable row was reverted because they answered. */
+  recovered: number;
   details: Array<{ modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null; reason?: string }>;
 };
 
 export type ProbeSiteModelsProgress =
   | { type: 'start'; scope: 'single' | 'all'; modelsCount: number; modelsToProbe: string[] }
   | { type: 'model'; modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null; latencyExceeded?: true; reason?: string }
-  | { type: 'action'; modelName: string; action: 'disabled' };
+  | { type: 'action'; modelName: string; action: 'disabled' | 'enabled' };
 
 export async function probeSiteModels(
   siteId: number,
@@ -313,7 +316,7 @@ export async function probeSiteModels(
   onProgress?: (event: ProbeSiteModelsProgress) => void,
 ): Promise<ProbeSiteModelsResult> {
   const empty = (scope: 'single' | 'all', error: string): ProbeSiteModelsResult =>
-    ({ success: false, error, scope, probed: 0, unsupported: 0, inconclusive: 0, details: [] });
+    ({ success: false, error, scope, probed: 0, unsupported: 0, inconclusive: 0, recovered: 0, details: [] });
 
   const site = await db.select().from(schema.sites).where(eq(schema.sites.id, siteId)).get();
   if (!site) return empty('single', '站点不存在');
@@ -331,10 +334,35 @@ export async function probeSiteModels(
     ))
     .all();
 
+  // Models this key currently has disabled are probed too, even though their
+  // availability flag is false: they are exactly the ones an operator wants a
+  // second opinion on, and a confirmed success is what lifts the disable. Rows
+  // the operator disabled by hand stay disable-relevant but are never reverted
+  // (clearAutoDisabledModels only touches probe provenance).
+  const disabledRows = await db.select({ modelName: schema.siteDisabledModels.modelName })
+    .from(schema.siteDisabledModels)
+    .where(and(
+      eq(schema.siteDisabledModels.siteId, siteId),
+      eq(schema.siteDisabledModels.accountId, account.id),
+    ))
+    .all();
+
   const scope = options?.scope ?? (options?.modelName !== undefined
     ? 'single'
     : site.postRefreshProbeScope === 'all' ? 'all' : 'single');
-  const availableModels = modelRows.map((r: any) => r.modelName.trim()).filter((m: any) => m.length > 0);
+  const seenModels = new Set<string>();
+  const availableModels: string[] = [];
+  for (const raw of [
+    ...modelRows.map((r: any) => r.modelName),
+    ...disabledRows.map((r: any) => r.modelName),
+  ]) {
+    const name = String(raw || '').trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seenModels.has(key)) continue;
+    seenModels.add(key);
+    availableModels.push(name);
+  }
   if (availableModels.length === 0) {
     return empty(scope, '该站点暂无已发现模型，请先刷新模型列表');
   }
@@ -357,6 +385,8 @@ export async function probeSiteModels(
   }
 
   onProgress?.({ type: 'start', scope, modelsCount: modelsToProbe.length, modelsToProbe });
+
+  let recoveredCount = 0;
 
   // Probe models concurrently, limited by the caller-provided concurrency
   const concurrency = Math.max(1, options?.concurrency ?? 10);
@@ -419,7 +449,7 @@ export async function probeSiteModels(
       ))
       .run();
     await db.insert(schema.siteDisabledModels)
-      .values(unsupportedModels.map((modelName) => ({ siteId, accountId: account.id, modelName })))
+      .values(unsupportedModels.map((modelName) => ({ siteId, accountId: account.id, modelName, source: 'probe' })))
       .onConflictDoNothing()
       .run();
     for (const modelName of unsupportedModels) {
@@ -447,6 +477,24 @@ export async function probeSiteModels(
         inArray(schema.modelAvailability.modelName, supportedModels),
       ))
       .run();
+    // …and it is the same kind of evidence a disable was based on, so a model
+    // that answers again leaves the disabled list instead of staying excluded
+    // from routing forever.
+    const recoveredModels = await clearAutoDisabledModels({
+      siteId,
+      accountId: account.id,
+      modelNames: supportedModels,
+    });
+    recoveredCount += recoveredModels.length;
+    for (const modelName of recoveredModels) {
+      onProgress?.({ type: 'action', modelName, action: 'enabled' });
+    }
+    if (recoveredModels.length > 0) {
+      invalidateTokenRouterCache();
+      rebuildTokenRoutesFromAvailability().catch((err) => {
+        console.warn('[probe-site-now] route rebuild after auto-recovery failed', err);
+      });
+    }
   }
 
   return {
@@ -455,6 +503,7 @@ export async function probeSiteModels(
     probed: details.length,
     unsupported: unsupportedModels.length,
     inconclusive: inconclusiveModels.length,
+    recovered: recoveredCount,
     details,
   };
 }
@@ -522,7 +571,7 @@ async function runPostRefreshProbeIfEnabled(params: {
       ))
       .run();
     await db.insert(schema.siteDisabledModels)
-      .values(unsupportedModels.map((modelName) => ({ siteId: params.site.id, accountId: params.account.id, modelName })))
+      .values(unsupportedModels.map((modelName) => ({ siteId: params.site.id, accountId: params.account.id, modelName, source: 'probe' })))
       .onConflictDoNothing()
       .run();
     // Update account health
@@ -542,7 +591,8 @@ async function runPostRefreshProbeIfEnabled(params: {
   }
 
   // Same positive-proof refresh as the manual-probe path: a supported verdict
-  // clears a stale `connectivity = false` instead of letting it ride on TTL.
+  // clears a stale `connectivity = false` instead of letting it ride on TTL,
+  // and reverts the disables this probe wrote for models that answer again.
   const supportedModels = details.filter((d) => d.status === 'supported').map((d) => d.modelName);
   if (supportedModels.length > 0) {
     await db.update(schema.modelAvailability)
@@ -552,6 +602,17 @@ async function runPostRefreshProbeIfEnabled(params: {
         inArray(schema.modelAvailability.modelName, supportedModels),
       ))
       .run();
+    const recoveredModels = await clearAutoDisabledModels({
+      siteId: params.site.id,
+      accountId: params.account.id,
+      modelNames: supportedModels,
+    });
+    if (recoveredModels.length > 0) {
+      invalidateTokenRouterCache();
+      rebuildTokenRoutesFromAvailability().catch((err) => {
+        console.warn('[post-refresh-probe] route rebuild after auto-recovery failed', err);
+      });
+    }
   }
 
   return {

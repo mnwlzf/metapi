@@ -320,6 +320,25 @@ describe('probeRuntimeModel', () => {
     expect(reason).toContain('本站其他模型可能仍正常');
   });
 
+  it('treats the rejections relays actually send as a definite model verdict', async () => {
+    const { classifyUnsupportedFailure } = await import('./runtimeModelProbe.js');
+
+    // Shapes seen in the wild that used to fall through to "no verdict" and so
+    // never disabled anything, leaving 35 of 46 models permanently unknown.
+    expect(classifyUnsupportedFailure(404, '{"error":{"message":"Model \\"gpt-4o\\" is not supported"}}')).toBe(true);
+    expect(classifyUnsupportedFailure(503, '当前分组下没有可用渠道')).toBe(true);
+    expect(classifyUnsupportedFailure(500, '{"error":{"message":"model_not_found"}}')).toBe(true);
+    expect(classifyUnsupportedFailure(403, '无权限')).toBe(true);
+    expect(classifyUnsupportedFailure(502, 'no available channel for model claude-opus-5')).toBe(true);
+
+    // Nothing here names the model, or the failure is about our own pace: those
+    // stay inconclusive, so no disable row is written.
+    expect(classifyUnsupportedFailure(429, '当前模型暂不可用')).toBe(false);
+    expect(classifyUnsupportedFailure(429, 'rate limit exceeded')).toBe(false);
+    expect(classifyUnsupportedFailure(502, '<html><body>502 Bad Gateway</body></html>')).toBe(false);
+    expect(classifyUnsupportedFailure(500, 'internal error')).toBe(false);
+  });
+
   it('does not send max_tokens/max_completion_tokens so probes look like normal client traffic', async () => {
     const { buildRuntimeProbeChatBody } = await import('./runtimeModelProbe.js');
     // A small max_tokens is a classic probe signature for relays (one-api/

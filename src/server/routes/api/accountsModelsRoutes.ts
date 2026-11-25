@@ -142,7 +142,8 @@ export function registerAccountModelRoutes(app: FastifyInstance) {
 
         if (uniqueModels.length > 0) {
           await tx.insert(schema.siteDisabledModels).values(
-            uniqueModels.map((modelName) => ({ siteId, accountId, modelName })),
+            // Operator intent: automatic recovery must never undo these.
+            uniqueModels.map((modelName) => ({ siteId, accountId, modelName, source: 'manual' })),
           ).run();
         }
       });

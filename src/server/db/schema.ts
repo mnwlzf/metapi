@@ -104,6 +104,14 @@ export const siteDisabledModels = sqliteTable('site_disabled_models', {
   // NULL = disabled for every key of the site; set = disabled for this key only.
   accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
   modelName: text('model_name').notNull(),
+  // Why the row exists, so automatic recovery knows what it may undo:
+  // 'probe'  — written by a connectivity probe that got a definite "not
+  //            supported" answer. Auto-reverted once that model answers again.
+  // 'manual' — the operator disabled it (per-key editor). Sticky user intent.
+  // 'policy' — new-model policy disabled it. Sticky.
+  // NULL     — rows written before this column existed; treated like 'probe'
+  //            so an already-stuck model can recover on a confirmed success.
+  source: text('source'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 }, (table) => ({
   siteAccountModelUnique: uniqueIndex('site_disabled_models_site_account_model_unique').on(table.siteId, table.accountId, table.modelName),
