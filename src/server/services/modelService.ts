@@ -430,13 +430,21 @@ export async function probeSiteModels(
   // Restore original model order for the final details list
   const details = modelsToProbe.map((m) => detailsMap.get(m)!);
 
-  // Only a definite 'unsupported' verdict may disable a model. 'inconclusive'
-  // means the probe reached no conclusion (timeout / transport error), so
-  // treating it as unsupported would let a single transient failure write a
-  // permanent site_disabled_models row — there is no automatic recovery path.
+  // Only a confirmed-usable answer keeps a model in the routing pool. Both a
+  // definite rejection and a probe that reached no conclusion take the model
+  // out: an unproven model must not be routed on hope, and the operator's rule
+  // is "usable means verified usable".
+  //
+  // This is affordable only because recovery is automatic: disabled models are
+  // re-probed on the next pass (see the disabled-list union above) and a
+  // successful answer deletes the disable row again, so a transient timeout
+  // costs availability until the next probe instead of forever. Models the
+  // probe cannot speak about at all ('skipped': embeddings/rerank/tts/…) are
+  // excluded — they are never tested, so disabling them would mean permanently.
   const unsupportedModels = details.filter((d) => d.status === 'unsupported').map((d) => d.modelName);
   const inconclusiveModels = details.filter((d) => d.status === 'inconclusive').map((d) => d.modelName);
-  if (unsupportedModels.length > 0) {
+  const unverifiedModels = [...unsupportedModels, ...inconclusiveModels];
+  if (unverifiedModels.length > 0) {
     const checkedAt = new Date().toISOString();
     // Two statements for the whole batch instead of two per model: on SQLite each
     // statement is its own commit, so a site with hundreds of dead models paid
@@ -445,19 +453,19 @@ export async function probeSiteModels(
       .set({ available: false, checkedAt })
       .where(and(
         eq(schema.modelAvailability.accountId, account.id),
-        inArray(schema.modelAvailability.modelName, unsupportedModels),
+        inArray(schema.modelAvailability.modelName, unverifiedModels),
       ))
       .run();
     await db.insert(schema.siteDisabledModels)
-      .values(unsupportedModels.map((modelName) => ({ siteId, accountId: account.id, modelName, source: 'probe' })))
+      .values(unverifiedModels.map((modelName) => ({ siteId, accountId: account.id, modelName, source: 'probe' })))
       .onConflictDoNothing()
       .run();
-    for (const modelName of unsupportedModels) {
+    for (const modelName of unverifiedModels) {
       onProgress?.({ type: 'action', modelName, action: 'disabled' });
     }
-    const reason = unsupportedModels.length === 1
-      ? `手动探测失败：模型 ${unsupportedModels[0]} 不可用`
-      : `手动探测失败：${unsupportedModels.length} 个模型不可用（${unsupportedModels.slice(0, 3).join('、')}${unsupportedModels.length > 3 ? '…' : ''}）`;
+    const reason = unverifiedModels.length === 1
+      ? `手动探测未通过：模型 ${unverifiedModels[0]} 未确认可用`
+      : `手动探测未通过：${unverifiedModels.length} 个模型未确认可用（${unverifiedModels.slice(0, 3).join('、')}${unverifiedModels.length > 3 ? '…' : ''}）`;
     await setAccountRuntimeHealth(account.id, { state: 'unhealthy', reason, source: 'manual-probe', checkedAt });
     rebuildTokenRoutesFromAvailability().catch((err) => {
       console.warn('[probe-site-now] route rebuild failed', err);
@@ -556,28 +564,29 @@ async function runPostRefreshProbeIfEnabled(params: {
     }
   }
 
-  // Handle unsupported models. 'inconclusive' is deliberately excluded: it is
-  // an unfinished probe, not a verdict, and must not disable anything.
+  // Same policy as the manual probe: only a confirmed answer keeps a model in
+  // the pool, so a definite rejection and an unanswered probe both disable.
   const unsupportedModels = details.filter((d) => d.status === 'unsupported').map((d) => d.modelName);
   const inconclusiveModels = details.filter((d) => d.status === 'inconclusive').map((d) => d.modelName);
-  if (unsupportedModels.length > 0) {
+  const unverifiedModels = [...unsupportedModels, ...inconclusiveModels];
+  if (unverifiedModels.length > 0) {
     const checkedAt = new Date().toISOString();
     // Batched for the same reason as the manual-probe path above.
     await db.update(schema.modelAvailability)
       .set({ available: false, checkedAt })
       .where(and(
         eq(schema.modelAvailability.accountId, params.account.id),
-        inArray(schema.modelAvailability.modelName, unsupportedModels),
+        inArray(schema.modelAvailability.modelName, unverifiedModels),
       ))
       .run();
     await db.insert(schema.siteDisabledModels)
-      .values(unsupportedModels.map((modelName) => ({ siteId: params.site.id, accountId: params.account.id, modelName, source: 'probe' })))
+      .values(unverifiedModels.map((modelName) => ({ siteId: params.site.id, accountId: params.account.id, modelName, source: 'probe' })))
       .onConflictDoNothing()
       .run();
     // Update account health
-    const reason = unsupportedModels.length === 1
-      ? `刷新后探测失败：模型 ${unsupportedModels[0]} 不可用`
-      : `刷新后探测失败：${unsupportedModels.length} 个模型不可用（${unsupportedModels.slice(0, 3).join('、')}${unsupportedModels.length > 3 ? '…' : ''}）`;
+    const reason = unverifiedModels.length === 1
+      ? `刷新后探测未通过：模型 ${unverifiedModels[0]} 未确认可用`
+      : `刷新后探测未通过：${unverifiedModels.length} 个模型未确认可用（${unverifiedModels.slice(0, 3).join('、')}${unverifiedModels.length > 3 ? '…' : ''}）`;
     await setAccountRuntimeHealth(params.account.id, {
       state: 'unhealthy',
       reason,

@@ -18,7 +18,12 @@ vi.mock('./runtimeModelProbe.js', () => ({
 type DbModule = typeof import('../db/index.js');
 type ModelServiceModule = typeof import('./modelService.js');
 
-describe('probeSiteModels does not disable models from an inconclusive probe', () => {
+/**
+ * Policy: only a confirmed "usable" answer keeps a model in the routing pool.
+ * A probe that reached no conclusion is not evidence of usability, so it takes
+ * the model out too — and the next successful probe puts it back.
+ */
+describe('probeSiteModels disables every model it could not confirm', () => {
   let db: DbModule['db'];
   let schema: DbModule['schema'];
   let probeSiteModels: ModelServiceModule['probeSiteModels'];
@@ -48,7 +53,7 @@ describe('probeSiteModels does not disable models from an inconclusive probe', (
     delete process.env.DATA_DIR;
   });
 
-  it('leaves the model enabled when the probe reaches no conclusion', async () => {
+  async function seedSite() {
     const site = await db.insert(schema.sites).values({
       name: 'Inconclusive Site',
       url: 'http://127.0.0.1:1/',
@@ -83,16 +88,20 @@ describe('probeSiteModels does not disable models from an inconclusive probe', (
       available: true,
     }).run();
 
+    return { siteId, accountId };
+  }
+
+  it('disables a model whose probe reached no conclusion', async () => {
+    const { siteId, accountId } = await seedSite();
+
     const result = await probeSiteModels(siteId, { scope: 'all' });
 
-    // The probe returned inconclusive → no models should be disabled.
-    expect(result.unsupported).toBe(0);
     expect(result.inconclusive).toBeGreaterThan(0);
+    expect(result.unsupported).toBe(0);
 
-    // Verify the database was not touched: no site_disabled_models row
-    // and model_availability still has available=true.
     const disabled = await db.select().from(schema.siteDisabledModels).all();
-    expect(disabled).toHaveLength(0);
+    expect(disabled).toHaveLength(1);
+    expect(disabled[0]).toMatchObject({ modelName: 'gpt-4o', source: 'probe' });
 
     const maRow = await db.select().from(schema.modelAvailability)
       .where(and(
@@ -100,34 +109,15 @@ describe('probeSiteModels does not disable models from an inconclusive probe', (
         eq(schema.modelAvailability.modelName, 'gpt-4o'),
       ))
       .get();
-    expect(maRow?.available).toBe(true);
+    expect(maRow?.available).toBe(false);
   });
 
   it('clears a stale connectivity=false when a probe confirms the model works', async () => {
-    const site = await db.insert(schema.sites).values({
-      name: 'Supported Site',
-      url: 'http://127.0.0.1:1/',
-      platform: 'new-api',
-      status: 'active',
-    }).run();
-    const siteId = Number(site.lastInsertRowid);
-
-    const account = await db.insert(schema.accounts).values({
-      siteId,
-      accessToken: 'tok',
-      status: 'active',
-    }).run();
-    const accountId = Number(account.lastInsertRowid);
-
-    // Listing knows the model, but live traffic marked the channel unreachable:
-    // the router soft-avoids connectivity=false channels, so without a positive
-    // probe write the mark would ride its TTL forever.
-    await db.insert(schema.modelAvailability).values({
-      accountId,
-      modelName: 'gpt-4o',
-      available: true,
-      connectivity: false,
-    }).run();
+    const { siteId, accountId } = await seedSite();
+    await db.update(schema.modelAvailability)
+      .set({ connectivity: false })
+      .where(eq(schema.modelAvailability.accountId, accountId))
+      .run();
 
     vi.mocked(probeRuntimeModel).mockResolvedValueOnce({
       status: 'supported',
@@ -145,5 +135,7 @@ describe('probeSiteModels does not disable models from an inconclusive probe', (
       .get();
     expect(row?.connectivity).toBe(true);
     expect(row?.available).toBe(true);
+    // A confirmed answer also leaves the disabled list.
+    expect(await db.select().from(schema.siteDisabledModels).all()).toHaveLength(0);
   });
 });
