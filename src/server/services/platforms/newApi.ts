@@ -1,4 +1,4 @@
-import { ApiTokenInfo, BasePlatformAdapter, CheckinResult, BalanceInfo, UserInfo, TokenVerifyResult, CreateApiTokenOptions, type DeleteApiTokenResult, type ModelDiscoveryOptions, type SiteAnnouncement } from './base.js';
+import { ApiTokenInfo, BasePlatformAdapter, CheckinResult, BalanceInfo, UserInfo, TokenVerifyResult, CreateApiTokenOptions, type DeleteApiTokenResult, type ModelDiscoveryOptions, type SiteAnnouncement, type UserGroupInfo } from './base.js';
 import type { RequestInit as UndiciRequestInit } from 'undici';
 import {
   describeUnusableVariantResponse,
@@ -21,6 +21,8 @@ import {
   isTokenListResponse,
   normalizeTokenKeyForCompare,
   parseGroupKeys,
+  parseGroupMetaMap,
+  type NewApiGroupMeta,
   resolveGroupFetchErrorMessage,
   normalizeTokenItems,
   parseUserInfo,
@@ -1015,6 +1017,59 @@ export class NewApiAdapter extends BasePlatformAdapter {
     // null, otherwise the caller only sees "nothing worked".
     logAllVariantsFailed('createApiToken', failures);
     return false;
+  }
+
+  /**
+   * new-api lists a user's groups *with* their ratio, but `getUserGroups` only
+   * keeps the keys. Re-read the same two endpoints here so the account-token
+   * list can show the group's multiplier instead of an empty column — the
+   * generic base implementation always reports `rateMultiplier: null`.
+   *
+   * The key set stays whatever `getUserGroups` resolved, so a token can never
+   * look "removed" just because the ratio read used a different credential
+   * variant; a missing ratio is reported as `null` (unknown), never as 1x.
+   * Only an explicitly closed schedule (`schedule_enabled && !schedule_active`)
+   * is reported as unavailable — the payload carries no other negative signal.
+   */
+  override async getUserGroupCatalog(
+    baseUrl: string,
+    accessToken: string,
+    platformUserId?: number,
+  ): Promise<UserGroupInfo[]> {
+    const groups = await this.getUserGroups(baseUrl, accessToken, platformUserId);
+    if (groups.length === 0) return [];
+    const meta = await this.fetchGroupMeta(baseUrl, accessToken, platformUserId).catch(() => ({}));
+    return groups.map((name) => {
+      const entry = meta[name];
+      return {
+        id: null,
+        name,
+        status: entry && entry.scheduleEnabled === true && entry.scheduleActive === false
+          ? 'inactive' as const
+          : 'unknown' as const,
+        rateMultiplier: entry?.ratio ?? null,
+      };
+    });
+  }
+
+  private async fetchGroupMeta(
+    baseUrl: string,
+    accessToken: string,
+    platformUserId?: number,
+  ): Promise<Record<string, NewApiGroupMeta>> {
+    const resolvedUserId = platformUserId || await this.discoverUserId(baseUrl, accessToken);
+    const headers = authHeaders(accessToken, resolvedUserId || undefined);
+    for (const endpoint of ['/api/user/self/groups', '/api/user_group_map']) {
+      try {
+        const res = await this.fetchJson<any>(`${baseUrl}${endpoint}`, { headers });
+        if (res?.success === false) continue;
+        const meta = parseGroupMetaMap(res);
+        if (Object.keys(meta).length > 0) return meta;
+      } catch (error) {
+        if (error instanceof NewApiShieldError && error.failure.terminal) throw error;
+      }
+    }
+    return {};
   }
 
   async getUserGroups(baseUrl: string, accessToken: string, platformUserId?: number): Promise<string[]> {

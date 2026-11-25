@@ -364,6 +364,7 @@ export type RuntimeSettingsPayload = {
   adminIpAllowlist?: string[] | string;
   routingFallbackUnitCost?: number;
   proxyFirstByteTimeoutSec?: number;
+  proxyFirstByteWindowFloorSec?: number;
   proxyRouteProbeRate?: number;
   proxyConcurrencySpreadEnabled?: boolean;
   tokenRouterFailureCooldownMaxSec?: number;
@@ -744,10 +745,15 @@ export const api = {
     }),
 
   // Account tokens
-  getAccountTokens: (accountId?: number) =>
-    request(`/api/account-tokens${accountId ? `?accountId=${accountId}` : ''}`, {
-      cache: 'no-store',
-    }),
+  getAccountTokens: (accountId?: number, options?: { refreshGroups?: boolean }) => {
+    const params = new URLSearchParams();
+    if (accountId) params.set('accountId', String(accountId));
+    // Group names and multipliers are upstream-owned: `refreshGroups` forces a
+    // read past the server-side catalog cache when the user asks for it.
+    if (options?.refreshGroups) params.set('refreshGroups', '1');
+    const query = params.toString();
+    return request(`/api/account-tokens${query ? `?${query}` : ''}`, { cache: 'no-store' });
+  },
   addAccountToken: (data: AccountTokenCreatePayload) =>
     request('/api/account-tokens', {
       method: 'POST',

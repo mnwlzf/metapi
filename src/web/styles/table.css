@@ -882,6 +882,13 @@ body.site-drag-active * {
   font-variant-numeric: tabular-nums;
 }
 
+/* The multiplier was read long enough ago that upstream may have repriced the
+   group since; the token tooltip explains how old it is and how to refresh. */
+.token-group-rate.is-stale {
+  border-color: color-mix(in srgb, var(--color-warning) 45%, transparent);
+  color: var(--color-warning);
+}
+
 .token-group-status {
   flex: none;
   display: inline-flex;

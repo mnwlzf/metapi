@@ -174,6 +174,21 @@ const formatGroupRate = (value: number): string => (
   Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)))
 );
 
+/**
+ * A multiplier is provider-owned data: the user cannot know when upstream
+ * repriced a group, so the cell shows when the value was read instead of
+ * pretending it is live. Past this age it is flagged as possibly stale.
+ */
+const GROUP_RATE_STALE_MS = 10 * 60 * 1000;
+
+const formatGroupRateFetchedAt = (value: unknown): string | null => {
+  const ms = typeof value === 'number' ? value : (typeof value === 'string' ? Date.parse(value) : Number.NaN);
+  if (!Number.isFinite(ms)) return null;
+  const date = new Date(ms);
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
 const buildGroupOptionLabel = (detail: TokenGroupDetail | undefined, fallback: string): string => {
   if (!detail) return fallback;
   const parts = [detail.name];
@@ -207,19 +222,31 @@ const formatTokenGroupText = (token: any): string => {
  * stored key — the group was deleted or taken offline, so the token's own state
  * says nothing about whether it can still serve traffic.
  */
-function TokenGroupCell({ token }: { token: any }) {
+function TokenGroupCell({ token, now }: { token: any; now?: number }) {
   const key = String(token?.tokenGroup || '').trim();
   // groupName is null when upstream did not return the key in its catalog; show
   // the raw id so a stale group is obvious rather than silently renamed.
   const name = String(token?.groupName || (key ? `#${key}` : 'default'));
   const status = String(token?.groupStatus || '');
   const rate = typeof token?.groupRateMultiplier === 'number' ? token.groupRateMultiplier : null;
-  const tooltip = key && key !== name ? `${name}（${key}）` : name;
+  const fetchedAtMs = typeof token?.groupFetchedAt === 'number' ? token.groupFetchedAt : null;
+  const fetchedLabel = formatGroupRateFetchedAt(token?.groupFetchedAt);
+  const nowMs = typeof now === 'number' ? now : Date.now();
+  const rateStale = fetchedAtMs !== null && nowMs - fetchedAtMs > GROUP_RATE_STALE_MS;
+  const tooltipParts = [key && key !== name ? `${name}（${key}）` : name];
+  if (fetchedLabel) tooltipParts.push(`${tr('倍率更新于')} ${fetchedLabel}`);
+  if (rateStale) tooltipParts.push(tr('分组倍率可能已过期，可点“刷新分组倍率”'));
+  const tooltip = tooltipParts.join(' · ');
   return (
     <span className="token-group-cell">
       <span className="token-group-name" title={tooltip}>{name}</span>
       {rate != null ? (
-        <span className="token-group-rate" title={tr('分组倍率')}>{`×${formatGroupRate(rate)}`}</span>
+        <span
+          className={`token-group-rate${rateStale ? ' is-stale' : ''}`}
+          title={rateStale
+            ? tr('分组倍率可能已过期，可点“刷新分组倍率”')
+            : (fetchedLabel ? `${tr('倍率更新于')} ${fetchedLabel}` : tr('分组倍率'))}
+        >{`×${formatGroupRate(rate)}`}</span>
       ) : null}
       {status === 'inactive' ? (
         <span className="token-group-status">
@@ -270,6 +297,13 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
   const [syncingAccountId, setSyncingAccountId] = useState(0);
   const [syncing, setSyncing] = useState(false);
   const [syncingAll, setSyncingAll] = useState(false);
+  const [refreshingGroups, setRefreshingGroups] = useState(false);
+  /**
+   * Clock used only to re-evaluate how old a rendered multiplier is. The page may
+   * stay open long after its catalog was read; without a tick the "possibly
+   * stale" marker would never appear. This costs no network request.
+   */
+  const [rateAgeNow, setRateAgeNow] = useState(() => Date.now());
   const [saving, setSaving] = useState(false);
   const [savingEdit, setSavingEdit] = useState(false);
   const [editingToken, setEditingToken] = useState<any | null>(null);
@@ -307,11 +341,11 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
   const editingTokenIdRef = useRef<number | null>(null);
   const toast = useToast();
 
-  const load = useCallback(async (options?: { forceSnapshot?: boolean }) => {
+  const load = useCallback(async (options?: { forceSnapshot?: boolean; refreshGroups?: boolean }) => {
     setLoading(true);
     try {
       const [tokenRows, accountSnapshot] = await Promise.all([
-        api.getAccountTokens(),
+        api.getAccountTokens(undefined, options?.refreshGroups ? { refreshGroups: true } : undefined),
         api.getAccountsSnapshot(options?.forceSnapshot ? { refresh: true } : undefined),
       ]);
       const latestAccounts: SyncableAccount[] = Array.isArray(accountSnapshot?.accounts)
@@ -362,6 +396,11 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
         clearTimeout(highlightTimerRef.current);
       }
     };
+  }, []);
+
+  useEffect(() => {
+    const timer = setInterval(() => setRateAgeNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -904,6 +943,20 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     }
   }, [load, toast]);
 
+  /**
+   * Multipliers change on the provider's schedule, not the user's, so the page
+   * offers an explicit re-read instead of waiting out the server-side TTL.
+   */
+  const handleRefreshGroups = useCallback(async () => {
+    setRefreshingGroups(true);
+    try {
+      await load({ refreshGroups: true });
+      toast.success(tr('分组倍率已刷新'));
+    } finally {
+      setRefreshingGroups(false);
+    }
+  }, [load, toast]);
+
   const handleSyncSite = useCallback(async () => {
     if (activeAccounts.length === 0) return;
     setSyncingAll(true);
@@ -1048,6 +1101,18 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
           </button>
         </>
       )}
+      {/* Mobile keeps this inside the "同步与筛选" drawer instead of crowding the header. */}
+      {isMobile ? null : (
+        <button
+          onClick={handleRefreshGroups}
+          disabled={refreshingGroups}
+          title={tr('重新读取上游分组名称与倍率（分组倍率由服务商设置，随时可能变化）')}
+          className="btn btn-ghost"
+          style={{ border: '1px solid var(--color-border)', padding: '8px 14px' }}
+        >
+          {refreshingGroups ? <><span className="spinner spinner-sm" /> {tr('刷新中...')}</> : tr('刷新分组倍率')}
+        </button>
+      )}
       <button
         onClick={handleToggleAdd}
         className="btn btn-primary"
@@ -1055,7 +1120,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
         {showAdd ? tr('取消') : tr('+ 新增令牌')}
       </button>
     </div>
-  ), [activeAccountSelectOptions, activeAccounts.length, embedded, handleSync, handleSyncAll, handleSyncSite, handleToggleAdd, isMobile, showAdd, syncing, syncingAccountId, syncingAll]);
+  ), [activeAccountSelectOptions, activeAccounts.length, embedded, handleRefreshGroups, handleSync, handleSyncAll, handleSyncSite, handleToggleAdd, isMobile, refreshingGroups, showAdd, syncing, syncingAccountId, syncingAll]);
 
   useEffect(() => {
     if (!embedded || !onEmbeddedActionsChange) return;
@@ -1111,6 +1176,13 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
               className="btn btn-ghost btn-outline"
             >
               {syncingAll ? <><span className="spinner spinner-sm" /> {tr('同步中...')}</> : tr('同步全部账号')}
+            </button>
+            <button
+              onClick={handleRefreshGroups}
+              disabled={refreshingGroups}
+              className="btn btn-ghost btn-outline"
+            >
+              {refreshingGroups ? <><span className="spinner spinner-sm" /> {tr('刷新中...')}</> : tr('刷新分组倍率')}
             </button>
           </div>
         )}
@@ -1553,7 +1625,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                       )}
                     </td>
                     <td>{token.account?.username || `account-${token.accountId}`}</td>
-                    <td><TokenGroupCell token={token} /></td>
+                    <td><TokenGroupCell token={token} now={rateAgeNow} /></td>
                     <td>
                       {isPending ? (
                         <StatusPill tone="warning" style={{ fontSize: 11 }}>{tr('待补全')}</StatusPill>

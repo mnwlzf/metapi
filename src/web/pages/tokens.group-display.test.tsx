@@ -78,6 +78,7 @@ describe('TokensPanel group display', () => {
         groupName: '福利pro不降智（0.1倍率）',
         groupStatus: 'active',
         groupRateMultiplier: 0.1,
+        groupFetchedAt: Date.now(),
         account: { username: 'session-user' },
         site: { name: 'Sub Site', url: 'https://sub.example.com' },
       },
@@ -110,6 +111,9 @@ describe('TokensPanel group display', () => {
         groupName: '生图分组',
         groupStatus: 'inactive',
         groupRateMultiplier: 1,
+        // Read 20 minutes ago: upstream may have repriced the group since, so
+        // the badge must say so instead of implying the multiplier is live.
+        groupFetchedAt: Date.now() - 20 * 60 * 1000,
         account: { username: 'session-user' },
         site: { name: 'Sub Site', url: 'https://sub.example.com' },
       },
@@ -142,6 +146,25 @@ describe('TokensPanel group display', () => {
       // An inactive upstream group is flagged.
       expect(rendered).toContain('生图分组');
       expect(rendered).toContain('不可用');
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('labels how old the multiplier is and flags a stale one', async () => {
+    let root!: ReturnType<typeof buildTokensRoot>;
+    try {
+      await act(async () => {
+        root = buildTokensRoot();
+      });
+      await flushMicrotasks();
+
+      const rendered = JSON.stringify(root.toJSON());
+      // Every row carries the age of the upstream read behind its multiplier.
+      expect(rendered).toContain('倍率更新于');
+      // A multiplier read 20 minutes ago is visually marked as possibly stale.
+      expect(rendered).toContain('token-group-rate is-stale');
+      expect(rendered).toContain('分组倍率可能已过期');
     } finally {
       root?.unmount();
     }

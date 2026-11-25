@@ -25,14 +25,29 @@ import { withAccountProxyOverride } from './siteProxy.js';
 
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 const CATALOG_LOAD_TIMEOUT_MS = 8_000;
+/**
+ * How long an already-loaded catalog may still be served after a refresh fails.
+ * A transient upstream error must not blank the multipliers the token list
+ * already shows; past this window the value is old enough that hiding it is
+ * more honest than displaying it.
+ */
+const CATALOG_MAX_STALE_MS = 30 * 60 * 1000;
 
 type CatalogCacheEntry = {
-  expiresAt: number;
   catalog: UserGroupInfo[];
+  /** Epoch ms of the upstream read that produced `catalog`. */
+  fetchedAt: number;
+  expiresAt: number;
+};
+
+/** Catalog plus the age of the upstream read behind it. */
+export type CatalogSnapshot = {
+  catalog: UserGroupInfo[];
+  fetchedAt: number | null;
 };
 
 const catalogCache = new Map<number, CatalogCacheEntry>();
-const catalogInflight = new Map<number, Promise<UserGroupInfo[]>>();
+const catalogInflight = new Map<number, Promise<CatalogSnapshot>>();
 
 export function __resetAccountGroupCatalogCacheForTests(): void {
   catalogCache.clear();
@@ -88,26 +103,53 @@ async function fetchAccountGroupCatalog(accountId: number): Promise<UserGroupInf
 /**
  * Load (or reuse) the group catalog of one account.
  *
- * Failures degrade to an empty catalog: display enrichment must never turn a
- * token-list request into an error, and stale-but-recent data is preferred over
- * none.
+ * Group names, statuses and rate multipliers are upstream-owned data that a
+ * provider can change without telling anyone, while a token row itself only
+ * changes when a user edits it. `forceRefresh` therefore exists so the token
+ * list can ask "what does upstream say right now" without waiting for the TTL,
+ * and the snapshot it returns carries `fetchedAt` so the UI can label the age
+ * instead of implying the multiplier is live.
+ *
+ * Failures degrade to the previous catalog (bounded by CATALOG_MAX_STALE_MS) or
+ * an empty one: display enrichment must never turn a token-list request into an
+ * error.
  */
-export async function loadAccountGroupCatalog(accountId: number): Promise<UserGroupInfo[]> {
+export async function loadAccountGroupCatalog(
+  accountId: number,
+  options?: { forceRefresh?: boolean },
+): Promise<UserGroupInfo[]> {
+  return (await loadAccountGroupCatalogWithMeta(accountId, options)).catalog;
+}
+
+export async function loadAccountGroupCatalogWithMeta(
+  accountId: number,
+  options?: { forceRefresh?: boolean },
+): Promise<CatalogSnapshot> {
+  const forceRefresh = options?.forceRefresh === true;
+  const now = Date.now();
   const cached = catalogCache.get(accountId);
-  if (cached && cached.expiresAt > Date.now()) return cached.catalog;
+  if (!forceRefresh && cached && cached.expiresAt > now) {
+    return { catalog: cached.catalog, fetchedAt: cached.fetchedAt };
+  }
 
   const running = catalogInflight.get(accountId);
   if (running) return running;
 
-  const task = (async () => {
+  const task = (async (): Promise<CatalogSnapshot> => {
     try {
       const catalog = await withTimeout(fetchAccountGroupCatalog(accountId), CATALOG_LOAD_TIMEOUT_MS);
+      const fetchedAt = Date.now();
       if (catalog.length > 0) {
-        catalogCache.set(accountId, { expiresAt: Date.now() + CATALOG_TTL_MS, catalog });
+        catalogCache.set(accountId, {
+          catalog,
+          fetchedAt,
+          expiresAt: fetchedAt + CATALOG_TTL_MS,
+        });
+        return { catalog, fetchedAt };
       }
-      return catalog;
+      return fallbackSnapshot(accountId, fetchedAt);
     } catch {
-      return [];
+      return fallbackSnapshot(accountId, Date.now());
     } finally {
       catalogInflight.delete(accountId);
     }
@@ -115,6 +157,19 @@ export async function loadAccountGroupCatalog(accountId: number): Promise<UserGr
 
   catalogInflight.set(accountId, task);
   return task;
+}
+
+/**
+ * A paid-for-elsewhere failure: keep the last good catalog while it is still
+ * recent enough to be useful, and report its (older) timestamp so the UI can say
+ * how stale it is.
+ */
+function fallbackSnapshot(accountId: number, now: number): CatalogSnapshot {
+  const previous = catalogCache.get(accountId);
+  if (previous && now - previous.fetchedAt < CATALOG_MAX_STALE_MS) {
+    return { catalog: previous.catalog, fetchedAt: previous.fetchedAt };
+  }
+  return { catalog: [], fetchedAt: null };
 }
 
 /**

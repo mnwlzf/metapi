@@ -23,6 +23,7 @@ import { startBackgroundTask } from '../../services/backgroundTaskService.js';
 import { withAccountProxyOverride } from '../../services/siteProxy.js';
 import {
   loadAccountGroupCatalog,
+  loadAccountGroupCatalogWithMeta,
   resolveTokenGroupDisplay,
 } from '../../services/accountGroupCatalogService.js';
 import { type ModelRefreshResult } from '../../services/modelService.js';
@@ -137,10 +138,14 @@ function isApiKeyConnection(account: typeof schema.accounts.$inferSelect): boole
  * Tokens persist the upstream group key (a numeric id on sub2api). Resolve it
  * against the account's group catalog so the list can show a name, the group's
  * status and its multiplier instead of a bare key. Unknown keys stay as-is.
+ *
+ * `refreshGroups` forces the upstream read past the catalog TTL: multipliers are
+ * provider-owned data that changes without user action, so the page needs a way
+ * to ask for the current value and to know how old the value it renders is.
  */
 async function attachTokenGroupDisplay<
   T extends { accountId?: number | null; tokenGroup?: string | null },
->(tokens: T[]) {
+>(tokens: T[], options?: { refreshGroups?: boolean }) {
   const accountIds = Array.from(new Set(
     tokens
       .map((token) => Number(token.accountId))
@@ -148,14 +153,14 @@ async function attachTokenGroupDisplay<
   ));
   if (accountIds.length === 0) return tokens;
 
-  const catalogs = new Map<number, Awaited<ReturnType<typeof loadAccountGroupCatalog>>>();
+  const snapshots = new Map<number, Awaited<ReturnType<typeof loadAccountGroupCatalogWithMeta>>>();
   await Promise.all(accountIds.map(async (id) => {
-    catalogs.set(id, await loadAccountGroupCatalog(id));
+    snapshots.set(id, await loadAccountGroupCatalogWithMeta(id, { forceRefresh: options?.refreshGroups }));
   }));
 
   return tokens.map((token) => {
-    const catalog = catalogs.get(Number(token.accountId)) || [];
-    const display = resolveTokenGroupDisplay(catalog, token.tokenGroup);
+    const snapshot = snapshots.get(Number(token.accountId));
+    const display = resolveTokenGroupDisplay(snapshot?.catalog ?? [], token.tokenGroup);
     return {
       ...token,
       // null means "not found in the upstream catalog"; the client renders the
@@ -164,6 +169,9 @@ async function attachTokenGroupDisplay<
       groupName: display.name,
       groupStatus: display.status,
       groupRateMultiplier: display.rateMultiplier,
+      // Epoch ms of the upstream read behind groupRateMultiplier. The client
+      // labels the multiplier with its age rather than presenting it as live.
+      groupFetchedAt: snapshot?.fetchedAt ?? null,
     };
   });
 }
@@ -529,10 +537,12 @@ function buildCoverageRefreshFailureItem(
 }
 
 export async function accountTokensRoutes(app: FastifyInstance) {
-  app.get<{ Querystring: { accountId?: string } }>('/api/account-tokens', async (request) => {
+  app.get<{ Querystring: { accountId?: string; refreshGroups?: string } }>('/api/account-tokens', async (request) => {
     const accountId = request.query.accountId ? Number.parseInt(request.query.accountId, 10) : undefined;
     const tokens = await listTokensWithRelations(Number.isFinite(accountId as number) ? accountId : undefined);
-    return await attachTokenGroupDisplay(tokens);
+    return await attachTokenGroupDisplay(tokens, {
+      refreshGroups: parseOptionalBoolean(request.query.refreshGroups) === true,
+    });
   });
 
   app.post<{ Body: unknown }>('/api/account-tokens', async (request, reply) => {

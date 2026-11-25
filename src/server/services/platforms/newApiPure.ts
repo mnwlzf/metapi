@@ -251,6 +251,116 @@ export function parseGroupKeys(payload: any): string[] {
     return [];
   }
 
+/** Per-group metadata published by a new-api group listing. */
+export type NewApiGroupMeta = {
+  /** Effective multiplier: >1 surcharge, <1 discount. null when unpublished. */
+  ratio: number | null;
+  /**
+   * Schedule flags. `enabled && !active` means the group is closed *right now*
+   * (an off-hours "限时分组"), which is the only availability signal this
+   * payload carries — never infer "open" from their absence.
+   */
+  scheduleEnabled: boolean | null;
+  scheduleActive: boolean | null;
+};
+
+/**
+ * Pull the per-group rate multiplier out of a new-api group listing.
+ *
+ * The same endpoints that answer "which groups does this user have"
+ * (`/api/user/self/groups`, `/api/user_group_map`) also publish the ratio, but
+ * in shapes that differ across forks: a `group -> { ratio }` object, a
+ * `group -> ratio` map, or an array of `{ name, ratio }` rows. `parseGroupKeys`
+ * throws the ratio away, which is why the token list showed a bare group name
+ * with no multiplier on new-api sites. Anything unrecognised is simply absent
+ * from the map — callers must render "unknown", never "1x".
+ *
+ * A real payload looks like:
+ * `{"data":{"CCMAX-可外接":{"base_ratio":1.2,"ratio":1.2,"desc":"…","order":1,
+ *   "schedule_active":false,"schedule_enabled":false,"vendor":{…}}}}`
+ * `ratio` is the effective multiplier and is the one billed; `base_ratio` is the
+ * pre-discount value and is deliberately ignored.
+ */
+export function parseGroupRatioMap(payload: any): Record<string, number> {
+    const meta = parseGroupMetaMap(payload);
+    const ratios: Record<string, number> = {};
+    for (const [name, item] of Object.entries(meta)) {
+      if (item.ratio !== null) ratios[name] = item.ratio;
+    }
+    return ratios;
+  }
+
+export function parseGroupMetaMap(payload: any): Record<string, NewApiGroupMeta> {
+    if (!payload || (typeof payload === 'object' && payload?.success === false)) return {};
+
+    const source = payload?.data ?? payload;
+    const meta: Record<string, NewApiGroupMeta> = {};
+    const metaKeys = new Set(['success', 'message', 'code', 'data', 'error']);
+
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        if (!item || typeof item !== 'object') continue;
+        const record = item as Record<string, unknown>;
+        const name = [record.name, record.group, record.group_name, record.key]
+          .map((value) => (typeof value === 'string' ? value.trim() : ''))
+          .find(Boolean);
+        if (name) meta[name] = readGroupMeta(record);
+      }
+      return meta;
+    }
+
+    if (source && typeof source === 'object') {
+      for (const [rawKey, value] of Object.entries(source as Record<string, unknown>)) {
+        const name = rawKey.trim();
+        if (!name || metaKeys.has(name.toLowerCase())) continue;
+        meta[name] = readGroupMeta(value);
+      }
+    }
+
+    return meta;
+  }
+
+function readGroupMeta(raw: unknown): NewApiGroupMeta {
+    const record = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    return {
+      ratio: readGroupRatio(raw),
+      scheduleEnabled: readBooleanFlag(record.schedule_enabled ?? record.scheduleEnabled),
+      scheduleActive: readBooleanFlag(record.schedule_active ?? record.scheduleActive),
+    };
+  }
+
+function readBooleanFlag(raw: unknown): boolean | null {
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'number') return raw !== 0;
+    if (typeof raw === 'string') {
+      const normalized = raw.trim().toLowerCase();
+      if (normalized === 'true' || normalized === '1') return true;
+      if (normalized === 'false' || normalized === '0') return false;
+    }
+    return null;
+  }
+
+/** A ratio may be the value itself (`{vip: 0.8}`) or a field of the group record. */
+function readGroupRatio(raw: unknown): number | null {
+    if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (!trimmed) return null;
+      const parsed = Number(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+    if (raw && typeof raw === 'object') {
+      const record = raw as Record<string, unknown>;
+      // `ratio` first: it is the billed multiplier. `base_ratio` is the
+      // pre-discount price and only appears in forks that publish both.
+      for (const key of ['ratio', 'group_ratio', 'rate', 'rate_multiplier', 'multiplier', 'base_ratio']) {
+        const parsed = readGroupRatio(record[key]);
+        if (parsed !== null) return parsed;
+      }
+    }
+    return null;
+  }
+
 export function resolveGroupFetchErrorMessage(payload: any): string {
     const message = typeof payload?.message === 'string' ? payload.message.trim() : '';
     const normalized = message.toLowerCase();
