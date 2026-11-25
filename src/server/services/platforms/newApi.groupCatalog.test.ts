@@ -33,8 +33,8 @@ describe('NewApiAdapter.getUserGroupCatalog', () => {
 
     await expect(adapter.getUserGroupCatalog('https://new.example.com', 'token'))
       .resolves.toEqual([
-        { id: null, name: 'default', status: 'unknown', rateMultiplier: 1 },
-        { id: null, name: 'vip', status: 'unknown', rateMultiplier: 0.8 },
+        { id: null, name: 'default', status: 'unknown', rateMultiplier: 1, vendor: null },
+        { id: null, name: 'vip', status: 'unknown', rateMultiplier: 0.8, vendor: null },
       ]);
   });
 
@@ -47,8 +47,8 @@ describe('NewApiAdapter.getUserGroupCatalog', () => {
     const catalog = await adapter.getUserGroupCatalog('https://new.example.com', 'token');
 
     expect(catalog).toEqual([
-      { id: null, name: 'default', status: 'unknown', rateMultiplier: 1 },
-      { id: null, name: 'legacy', status: 'unknown', rateMultiplier: null },
+      { id: null, name: 'default', status: 'unknown', rateMultiplier: 1, vendor: null },
+      { id: null, name: 'legacy', status: 'unknown', rateMultiplier: null, vendor: null },
     ]);
     expect(adapter.discoverUserId).toHaveBeenCalledWith('https://new.example.com', 'token');
   });
@@ -60,25 +60,26 @@ describe('NewApiAdapter.getUserGroupCatalog', () => {
     });
 
     await expect(adapter.getUserGroupCatalog('https://new.example.com', 'token'))
-      .resolves.toEqual([{ id: null, name: 'default', status: 'unknown', rateMultiplier: null }]);
+      .resolves.toEqual([{ id: null, name: 'default', status: 'unknown', rateMultiplier: null, vendor: null }]);
   });
 
   it('flags a group whose schedule is enabled but currently inactive', async () => {
     const adapter = buildAdapter({
-      groups: ['夜间-限时', '全天-特价'],
+      groups: ['澶滈棿-闄愭椂', '鍏ㄥぉ-鐗逛环'],
       ratioPayload: {
         success: true,
         data: {
-          '夜间-限时': { ratio: 0.2, schedule_enabled: true, schedule_active: false },
-          '全天-特价': { ratio: 0.5, schedule_enabled: true, schedule_active: true },
+          '澶滈棿-闄愭椂': { ratio: 0.2, schedule_enabled: true, schedule_active: false },
+          '鍏ㄥぉ-鐗逛环': { ratio: 0.5, schedule_enabled: true, schedule_active: true },
         },
       },
     });
 
     await expect(adapter.getUserGroupCatalog('https://new.example.com', 'token'))
       .resolves.toEqual([
-        { id: null, name: '夜间-限时', status: 'inactive', rateMultiplier: 0.2 },
-        { id: null, name: '全天-特价', status: 'unknown', rateMultiplier: 0.5 },
+        { id: null, name: '澶滈棿-闄愭椂', status: 'inactive', rateMultiplier: 0.2, vendor: null },
+        { id: null, name: '鍏ㄥぉ-鐗逛环', status: 'unknown', rateMultiplier: 0.5, vendor: null },
       ]);
   });
 });
+

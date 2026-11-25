@@ -869,6 +869,20 @@ body.site-drag-active * {
   color: var(--color-text-primary);
 }
 
+/* Model vendor the group serves (`openai`, `deepseek`, …). Quieter than the rate
+   badge: it is context for the rate, not a number to compare across rows. */
+.token-group-vendor {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-text-muted) 10%, transparent);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-transform: lowercase;
+}
+
 .token-group-rate {
   flex: none;
   padding: 1px 6px;

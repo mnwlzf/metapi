@@ -147,6 +147,8 @@ type TokenGroupDetail = {
   name: string;
   status: string;
   rateMultiplier: number | null;
+  /** Model vendor the group serves (sub2api `platform`), null when unpublished. */
+  vendor: string | null;
 };
 
 const parseGroupDetails = (res: any): TokenGroupDetail[] => (
@@ -158,6 +160,9 @@ const parseGroupDetails = (res: any): TokenGroupDetail[] => (
         status: typeof item?.status === 'string' ? item.status : 'unknown',
         rateMultiplier: typeof item?.rateMultiplier === 'number' && Number.isFinite(item.rateMultiplier)
           ? item.rateMultiplier
+          : null,
+        vendor: typeof item?.vendor === 'string' && item.vendor.trim()
+          ? item.vendor.trim().toLowerCase()
           : null,
       }))
       .filter((item: TokenGroupDetail) => item.name.length > 0)
@@ -192,6 +197,7 @@ const formatGroupRateFetchedAt = (value: unknown): string | null => {
 const buildGroupOptionLabel = (detail: TokenGroupDetail | undefined, fallback: string): string => {
   if (!detail) return fallback;
   const parts = [detail.name];
+  if (detail.vendor) parts.push(detail.vendor);
   if (typeof detail.rateMultiplier === 'number') parts.push(`×${formatGroupRate(detail.rateMultiplier)}`);
   if (detail.status === 'inactive') parts.push(tr('不可用'));
   return parts.join(' · ');
@@ -203,7 +209,9 @@ const formatTokenGroupText = (token: any): string => {
   const name = String(token?.groupName || (key ? `#${key}` : 'default'));
   const status = String(token?.groupStatus || '');
   const rate = typeof token?.groupRateMultiplier === 'number' ? token.groupRateMultiplier : null;
+  const vendor = typeof token?.groupVendor === 'string' && token.groupVendor ? token.groupVendor : null;
   const parts = [name];
+  if (vendor) parts.push(vendor);
   if (rate != null) parts.push(`×${formatGroupRate(rate)}`);
   if (status === 'inactive') parts.push(tr('不可用'));
   if (status === 'removed') parts.push(tr('已删除'));
@@ -230,6 +238,9 @@ function TokenGroupCell({ token, now }: { token: any; now?: number }) {
   const name = String(token?.groupName || (key ? `#${key}` : 'default'));
   const status = String(token?.groupStatus || '');
   const rate = typeof token?.groupRateMultiplier === 'number' ? token.groupRateMultiplier : null;
+  // Model vendor the group serves (sub2api publishes it as `platform`). Absent on
+  // new-api, where the group endpoints carry no vendor at all.
+  const vendor = typeof token?.groupVendor === 'string' && token.groupVendor ? token.groupVendor : null;
   const fetchedAtMs = typeof token?.groupFetchedAt === 'number' ? token.groupFetchedAt : null;
   const fetchedLabel = formatGroupRateFetchedAt(token?.groupFetchedAt);
   const nowMs = typeof now === 'number' ? now : Date.now();
@@ -240,6 +251,7 @@ function TokenGroupCell({ token, now }: { token: any; now?: number }) {
     ? token.groupCatalogError
     : null;
   const tooltipParts = [key && key !== name ? `${name}（${key}）` : name];
+  if (vendor) tooltipParts.push(`${tr('厂商')}：${vendor}`);
   if (fetchedLabel) tooltipParts.push(`${tr('倍率更新于')} ${fetchedLabel}`);
   if (rateStale) tooltipParts.push(tr('分组倍率可能已过期，可点“刷新分组倍率”'));
   if (catalogError) tooltipParts.push(`${tr('读取上游分组表失败')}：${catalogError}`);
@@ -247,6 +259,9 @@ function TokenGroupCell({ token, now }: { token: any; now?: number }) {
   return (
     <span className="token-group-cell">
       <span className="token-group-name" title={tooltip}>{name}</span>
+      {vendor ? (
+        <span className="token-group-vendor" title={`${tr('厂商')}：${vendor}`}>{vendor}</span>
+      ) : null}
       {rate != null ? (
         <span
           className={`token-group-rate${rateStale ? ' is-stale' : ''}`}

@@ -1048,6 +1048,9 @@ export class NewApiAdapter extends BasePlatformAdapter {
           ? 'inactive' as const
           : 'unknown' as const,
         rateMultiplier: entry?.ratio ?? null,
+        // new-api's group endpoints carry no model vendor: only a name and a
+        // ratio. Reported as unknown rather than guessed from the group name.
+        vendor: null,
       };
     });
   }

@@ -265,6 +265,9 @@ export type TokenGroupDisplay = {
   name: string | null;
   status: TokenGroupStatus;
   rateMultiplier: number | null;
+  /** Model vendor the group serves (`openai`, `deepseek`, …); null when the
+   *  platform does not publish one (new-api) or the key did not resolve. */
+  vendor: string | null;
 };
 
 /**
@@ -281,10 +284,15 @@ export function resolveTokenGroupDisplay(
 ): TokenGroupDisplay {
   const key = String(tokenGroup ?? '').trim();
   if (!key || catalog.length === 0) {
-    return { name: null, status: 'unknown', rateMultiplier: null };
+    return { name: null, status: 'unknown', rateMultiplier: null, vendor: null };
   }
 
   const hit = catalog.find((group) => group.id === key) || catalog.find((group) => group.name === key);
-  if (!hit) return { name: null, status: 'removed', rateMultiplier: null };
-  return { name: hit.name, status: hit.status, rateMultiplier: hit.rateMultiplier };
+  if (!hit) return { name: null, status: 'removed', rateMultiplier: null, vendor: null };
+  return {
+    name: hit.name,
+    status: hit.status,
+    rateMultiplier: hit.rateMultiplier,
+    vendor: hit.vendor ?? null,
+  };
 }

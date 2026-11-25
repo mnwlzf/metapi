@@ -319,10 +319,11 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
    * Parse a group catalog payload into display entries.
    *
    * `/api/v1/groups/available` answers with the full objects we need
-   * (`id` / `name` / `status` / `rate_multiplier`); the older `group_id`-only
-   * shapes are still accepted so the fallback endpoints keep working. The
-   * previous parser kept only keys, which is why the UI showed bare group ids
-   * and had no status or multiplier to render.
+   * (`id` / `name` / `status` / `rate_multiplier` / `platform`); the older
+   * `group_id`-only shapes are still accepted so the fallback endpoints keep
+   * working. The previous parser kept only keys, which is why the UI showed bare
+   * group ids and had no status or multiplier to render — and it dropped
+   * `platform`, the model vendor the group serves (`openai`, `deepseek`, …).
    */
   private parseGroupCatalog(payload: any): UserGroupInfo[] {
     const source = payload?.data ?? payload;
@@ -353,7 +354,7 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
         const name = String(item).trim();
         if (!name || seen.has(name)) continue;
         seen.add(name);
-        catalog.push({ id: null, name, status: 'unknown', rateMultiplier: null });
+        catalog.push({ id: null, name, status: 'unknown', rateMultiplier: null, vendor: null });
         continue;
       }
 
@@ -396,7 +397,19 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
         ?? record.multiplier,
       );
 
-      catalog.push({ id, name, status, rateMultiplier });
+      // Model vendor: `platform` on /api/v1/groups/available ("openai",
+      // "deepseek", …). Normalised to lower case so the UI can group/label it
+      // without caring about the upstream's casing.
+      const vendor = (() => {
+        for (const candidate of [record.platform, record.vendor, record.provider]) {
+          if (typeof candidate !== 'string') continue;
+          const normalized = candidate.trim().toLowerCase();
+          if (normalized) return normalized;
+        }
+        return null;
+      })();
+
+      catalog.push({ id, name, status, rateMultiplier, vendor });
     }
 
     return catalog;
@@ -867,7 +880,7 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     // display name rather than leaving the UI blank.
     const inferredIds = await this.inferGroupsFromKeys(normalizedBase, accessToken);
     if (inferredIds.length > 0) {
-      return inferredIds.map((id) => ({ id, name: id, status: 'unknown' as const, rateMultiplier: null }));
+      return inferredIds.map((id) => ({ id, name: id, status: 'unknown' as const, rateMultiplier: null, vendor: null }));
     }
 
     console.warn('[sub2api] getUserGroupCatalog: all variants failed');

@@ -104,6 +104,15 @@ export interface UserGroupInfo {  /**
    * `group_ratio`), null when upstream does not publish one.
    */
   rateMultiplier: number | null;
+  /**
+   * Model vendor the group serves (sub2api `platform`: `openai`, `deepseek`,
+   * `anthropic`, …), null when the platform does not publish one — new-api's
+   * group endpoints only carry a name and a ratio.
+   *
+   * Deliberately not called `platform`: in this codebase that word means the
+   * *site* platform (sub2api / new-api / one-api), which is a different axis.
+   */
+  vendor: string | null;
 }
 
 export interface CreateApiTokenOptions {
@@ -286,6 +295,7 @@ export abstract class BasePlatformAdapter implements PlatformAdapter {
       name: String(group || '').trim(),
       status: 'unknown' as const,
       rateMultiplier: null,
+      vendor: null,
     })).filter((group) => group.name.length > 0);
   }
 

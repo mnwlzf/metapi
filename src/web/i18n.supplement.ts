@@ -411,6 +411,7 @@ export const zhToEnSupplemental: Record<string, string> = {
   '刷新': 'refresh',
   '刷新分组倍率': 'Refresh group rates',
   '分组倍率': 'Group rate',
+  '厂商': 'Vendor',
   '分组倍率已刷新': 'Group rates refreshed',
   '分组倍率刷新失败': 'Failed to refresh group rates',
   '分组表读取失败': 'Group list unreadable',

@@ -169,6 +169,9 @@ async function attachTokenGroupDisplay<
       groupName: display.name,
       groupStatus: display.status,
       groupRateMultiplier: display.rateMultiplier,
+      // Model vendor the group serves (sub2api `platform`); null when upstream
+      // does not publish one, so the client renders nothing instead of guessing.
+      groupVendor: display.vendor,
       // Epoch ms of the upstream read behind groupRateMultiplier. The client
       // labels the multiplier with its age rather than presenting it as live.
       groupFetchedAt: snapshot?.fetchedAt ?? null,
@@ -1103,6 +1106,7 @@ export async function accountTokensRoutes(app: FastifyInstance) {
           name: group.name,
           status: group.status,
           rateMultiplier: group.rateMultiplier,
+          vendor: group.vendor ?? null,
         })),
       };
     } catch (error) {

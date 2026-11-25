@@ -68,6 +68,7 @@ describe('account token group catalog freshness', { timeout: 20_000 }, () => {
       groupName: string | null;
       groupStatus: string;
       groupRateMultiplier: number | null;
+      groupVendor: string | null;
       groupFetchedAt: number | null;
       groupCatalogError: string | null;
     }>;
@@ -102,7 +103,7 @@ describe('account token group catalog freshness', { timeout: 20_000 }, () => {
   it('reports the multiplier with the timestamp of the upstream read behind it', async () => {
     const { token } = await seedToken('295');
     getUserGroupCatalogMock.mockResolvedValue([
-      { id: '295', name: '福利pro不降智', status: 'active', rateMultiplier: 0.1 },
+      { id: '295', name: '福利pro不降智', status: 'active', rateMultiplier: 0.1, vendor: 'openai' },
     ]);
 
     const before = Date.now();
@@ -113,6 +114,8 @@ describe('account token group catalog freshness', { timeout: 20_000 }, () => {
       groupName: '福利pro不降智',
       groupStatus: 'active',
       groupRateMultiplier: 0.1,
+      // Model vendor the group serves, straight from upstream.
+      groupVendor: 'openai',
     });
     expect(typeof row.groupFetchedAt).toBe('number');
     expect(row.groupFetchedAt as number).toBeGreaterThanOrEqual(before);

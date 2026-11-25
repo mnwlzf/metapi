@@ -591,7 +591,7 @@ describe('Sub2ApiAdapter', () => {
     expect(groups).toEqual(['5', '6']);
   });
 
-  it('reads group name, status and multiplier from /api/v1/groups/available', async () => {
+  it('reads group name, status, multiplier and vendor from /api/v1/groups/available', async () => {
     await startServer((req, res) => {
       if (req.url?.startsWith('/api/v1/groups/available')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -599,8 +599,9 @@ describe('Sub2ApiAdapter', () => {
           code: 0,
           message: 'success',
           data: [
-            { id: 295, name: '福利pro不降智', status: 'active', rate_multiplier: 0.1 },
-            { id: 320, name: '已停用分组', status: 'inactive', rate_multiplier: 1 },
+            { id: 295, name: '福利pro不降智', status: 'active', rate_multiplier: 0.1, platform: 'openai' },
+            { id: 320, name: '已停用分组', status: 'inactive', rate_multiplier: 1, platform: 'DeepSeek' },
+            { id: 321, name: '无厂商分组', status: 'active', rate_multiplier: 0.5 },
           ],
         }));
         return;
@@ -610,8 +611,12 @@ describe('Sub2ApiAdapter', () => {
 
     const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
     expect(catalog).toEqual([
-      { id: '295', name: '福利pro不降智', status: 'active', rateMultiplier: 0.1 },
-      { id: '320', name: '已停用分组', status: 'inactive', rateMultiplier: 1 },
+      // `platform` is the model vendor the group serves; normalised to lower
+      // case so the UI can label it without caring about upstream casing.
+      { id: '295', name: '福利pro不降智', status: 'active', rateMultiplier: 0.1, vendor: 'openai' },
+      { id: '320', name: '已停用分组', status: 'inactive', rateMultiplier: 1, vendor: 'deepseek' },
+      // Not published → unknown, never guessed from the group name.
+      { id: '321', name: '无厂商分组', status: 'active', rateMultiplier: 0.5, vendor: null },
     ]);
   });
 
@@ -663,7 +668,7 @@ describe('Sub2ApiAdapter', () => {
     });
 
     const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
-    expect(catalog).toEqual([{ id: '1', name: 'default', status: 'unknown', rateMultiplier: null }]);
+    expect(catalog).toEqual([{ id: '1', name: 'default', status: 'unknown', rateMultiplier: null, vendor: null }]);
     expect(calls).toBe(1);
   });
 
@@ -686,7 +691,7 @@ describe('Sub2ApiAdapter', () => {
     });
 
     const catalog = await adapter.getUserGroupCatalog(baseUrl, 'jwt-token');
-    expect(catalog).toEqual([{ id: '42', name: '42', status: 'unknown', rateMultiplier: null }]);
+    expect(catalog).toEqual([{ id: '42', name: '42', status: 'unknown', rateMultiplier: null, vendor: null }]);
   });
 
   it('falls back to infer groups from /api/v1/keys when group endpoint is unavailable', async () => {
