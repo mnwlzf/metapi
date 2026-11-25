@@ -125,23 +125,37 @@ export function resolveProxyChannelFirstByteTimeoutMs(
   if (typeof observedTtftMs === 'number' && Number.isFinite(observedTtftMs)
     && observedTtftMs > 0) {
     const adaptiveMs = Math.trunc(observedTtftMs * PROXY_FIRST_BYTE_ADAPTIVE_MULTIPLIER);
-    return Math.min(fullMs, Math.max(PROXY_FIRST_BYTE_ADAPTIVE_FLOOR_MS, adaptiveMs));
+    return Math.min(fullMs, Math.max(resolveProxyFirstByteFloorMs(), adaptiveMs));
   }
   return fullMs;
 }
 
+/**
+ * The first-byte window floor, in ms.
+ *
+ * Provider set the default (30s) and the settings page can override it
+ * (`proxy_first_byte_window_floor_sec`). Read per call, not at boot, because the
+ * settings API mutates it at runtime. A saved value of 0 means "no floor" — the
+ * adaptive estimate decides on its own.
+ */
+export function resolveProxyFirstByteFloorMs(): number {
+  const configuredSec = Number((config as { proxyFirstByteWindowFloorSec?: number }).proxyFirstByteWindowFloorSec);
+  if (Number.isFinite(configuredSec) && configuredSec >= 0) return Math.trunc(configuredSec * 1000);
+  return PROXY_FIRST_BYTE_ADAPTIVE_FLOOR_MS;
+}
+
 /** Multiplier applied to a site's own first-byte EWMA. */
 export const PROXY_FIRST_BYTE_ADAPTIVE_MULTIPLIER = 5;
-/** Never shrink the first-byte window below this, even for very fast sites. */
+/** Floor used when the configured window floor is unavailable (see resolveProxyFirstByteFloorMs). */
 export const PROXY_FIRST_BYTE_ADAPTIVE_FLOOR_MS = 30_000;
 /**
- * Floor for the survival-curve estimator.
+ * Historical hard-coded floor for the survival-curve estimator.
  *
- * Raised from 5s to 8s after production evidence that 5s sat inside the normal
- * first-byte distribution of reasoning models: Antigravity's gemini-3.8-flash
- * succeeds at 5.0-6.7s, so a 5-6.5s window censored half of its attempts, and
- * every censored attempt was then read as "waiting is not worth it". A floor
- * below the healthy mode of a site is not a cost optimisation, it is an outage.
+ * Replaced by the settings-owned `proxy_first_byte_window_floor_sec` (default
+ * 30s, see config.proxyFirstByteWindowFloorSec) after production evidence that
+ * 8s cut reasoning models off before their first token and the resulting 408 was
+ * indistinguishable from an upstream failure. Kept only so old references and
+ * tests keep a name for the old value.
  */
 export const PROXY_FIRST_BYTE_WINDOW_FLOOR_MS = 8_000;
 /** Consecutive TIMEOUT failures tolerated before abandoning channel failover.

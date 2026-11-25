@@ -228,6 +228,13 @@ export function applyRuntimeSettings(settingsMap: Map<string, string>) {
     config.proxyFirstByteTimeoutSec = Math.max(0, Math.trunc(proxyFirstByteTimeoutSec));
   }
 
+  // Page-saved window floor wins over the env default; no row means "keep the
+  // default", so an untouched install behaves exactly as documented.
+  const proxyFirstByteWindowFloorSec = parseSettingFromMap<number>(settingsMap, 'proxy_first_byte_window_floor_sec');
+  if (typeof proxyFirstByteWindowFloorSec === 'number' && Number.isFinite(proxyFirstByteWindowFloorSec) && proxyFirstByteWindowFloorSec >= 0) {
+    config.proxyFirstByteWindowFloorSec = Math.max(0, Math.trunc(proxyFirstByteWindowFloorSec));
+  }
+
   const proxyRouteProbeRate = parseSettingFromMap<number>(settingsMap, 'proxy_route_probe_rate');
   if (typeof proxyRouteProbeRate === 'number' && Number.isFinite(proxyRouteProbeRate) && proxyRouteProbeRate >= 0 && proxyRouteProbeRate <= 1) {
     config.proxyRouteProbeRate = Math.min(1, Math.max(0, proxyRouteProbeRate));

@@ -9,18 +9,22 @@ import {
   getProxyEffectiveMaxChannelRetries,
   getProxyMaxChannelAttempts,
   getProxyMaxChannelRetries,
+  PROXY_FIRST_BYTE_ADAPTIVE_FLOOR_MS,
   resolveProxyChannelFirstByteTimeoutMs,
   resolveProxyFailoverDerivedBudgetMs,
+  resolveProxyFirstByteFloorMs,
 } from './proxyChannelRetry.js';
 
 const originalProxyMaxChannelAttempts = config.proxyMaxChannelAttempts;
 const originalBudget = (config as any).proxyChannelFailoverBudgetMs;
 const originalFirstByteTimeoutSec = (config as any).proxyFirstByteTimeoutSec;
+const originalFirstByteWindowFloorSec = (config as any).proxyFirstByteWindowFloorSec;
 
 afterEach(() => {
   config.proxyMaxChannelAttempts = originalProxyMaxChannelAttempts;
   (config as any).proxyChannelFailoverBudgetMs = originalBudget;
   (config as any).proxyFirstByteTimeoutSec = originalFirstByteTimeoutSec;
+  (config as any).proxyFirstByteWindowFloorSec = originalFirstByteWindowFloorSec;
 });
 
 describe('proxyChannelRetry', () => {
@@ -152,5 +156,43 @@ describe('proxyChannelRetry adaptive first-byte window', () => {
     expect(resolveProxyChannelFirstByteTimeoutMs(0, 20_000)).toBe(60_000);
     // No sample -> unchanged behaviour.
     expect(resolveProxyChannelFirstByteTimeoutMs(0, null)).toBe(60_000);
+  });
+
+  it('honours the operator-configured floor instead of a hard-coded 30s', () => {
+    (config as any).proxyFirstByteTimeoutSec = 120;
+    (config as any).proxyFirstByteWindowFloorSec = 45;
+    // 6s EWMA x 5 = 30s, still below the operator's 45s floor.
+    expect(resolveProxyChannelFirstByteTimeoutMs(0, 6_000)).toBe(45_000);
+
+    // 0 = no floor: the EWMA value stands on its own (still under the ceiling).
+    (config as any).proxyFirstByteWindowFloorSec = 0;
+    expect(resolveProxyChannelFirstByteTimeoutMs(0, 6_000)).toBe(30_000);
+
+    // A floor above the ceiling loses to the ceiling.
+    (config as any).proxyFirstByteWindowFloorSec = 600;
+    expect(resolveProxyChannelFirstByteTimeoutMs(0, 6_000)).toBe(120_000);
+  });
+});
+
+describe('first-byte window floor configuration', () => {
+  it('defaults to 30s so a slow reasoning model still gets its first token', () => {
+    // The floor used to be hard-coded at 8s, which cut reasoning models off
+    // before their first token and produced a 408 indistinguishable from an
+    // upstream failure.
+    expect(buildConfig({} as NodeJS.ProcessEnv).proxyFirstByteWindowFloorSec).toBe(30);
+    expect(buildConfig({ PROXY_FIRST_BYTE_WINDOW_FLOOR_SEC: '45' } as NodeJS.ProcessEnv)
+      .proxyFirstByteWindowFloorSec).toBe(45);
+    expect(buildConfig({ PROXY_FIRST_BYTE_WINDOW_FLOOR_SEC: '-5' } as NodeJS.ProcessEnv)
+      .proxyFirstByteWindowFloorSec).toBe(0);
+  });
+
+  it('falls back to the built-in floor when the config carries no value', () => {
+    const saved = (config as any).proxyFirstByteWindowFloorSec;
+    try {
+      delete (config as any).proxyFirstByteWindowFloorSec;
+      expect(resolveProxyFirstByteFloorMs()).toBe(PROXY_FIRST_BYTE_ADAPTIVE_FLOOR_MS);
+    } finally {
+      (config as any).proxyFirstByteWindowFloorSec = saved;
+    }
   });
 });

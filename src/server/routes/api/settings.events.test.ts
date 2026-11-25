@@ -655,6 +655,71 @@ describe('settings and auth events', () => {
     expect(runtime.proxyFirstByteTimeoutSec).toBe(7);
   });
 
+  it('persists and returns the first-byte window floor from runtime settings', async () => {
+    const updateResponse = await app.inject({
+      method: 'PUT',
+      url: '/api/settings/runtime',
+      payload: {
+        proxyFirstByteWindowFloorSec: 45,
+      },
+    });
+
+    expect(updateResponse.statusCode).toBe(200);
+    const updated = updateResponse.json() as { proxyFirstByteWindowFloorSec?: number };
+    expect(updated.proxyFirstByteWindowFloorSec).toBe(45);
+    expect((config as any).proxyFirstByteWindowFloorSec).toBe(45);
+
+    const saved = await db.select().from(schema.settings).where(eq(schema.settings.key, 'proxy_first_byte_window_floor_sec')).get();
+    expect(saved?.value).toBe(JSON.stringify(45));
+
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: '/api/settings/runtime',
+    });
+    expect(getResponse.statusCode).toBe(200);
+    const runtime = getResponse.json() as { proxyFirstByteWindowFloorSec?: number };
+    expect(runtime.proxyFirstByteWindowFloorSec).toBe(45);
+
+    // A page save wins over the env default on the next boot.
+    const rows = await db.select().from(schema.settings).all();
+    const settingsMap = new Map(rows.map((row) => [row.key, String(row.value)]));
+    (config as any).proxyFirstByteWindowFloorSec = 30;
+    const { applyRuntimeSettings } = await import('../../runtimeSettingsHydration.js');
+    applyRuntimeSettings(settingsMap);
+    expect((config as any).proxyFirstByteWindowFloorSec).toBe(45);
+  });
+
+  it('applies a saved first-byte window floor to the very next attempt without a restart', async () => {
+    const previousCeiling = (config as any).proxyFirstByteTimeoutSec;
+    const previousFloor = (config as any).proxyFirstByteWindowFloorSec;
+    try {
+      const updateResponse = await app.inject({
+        method: 'PUT',
+        url: '/api/settings/runtime',
+        payload: { proxyFirstByteTimeoutSec: 60, proxyFirstByteWindowFloorSec: 45 },
+      });
+      expect(updateResponse.statusCode).toBe(200);
+
+      // The window is resolved per attempt from live config, not cached at boot:
+      // the very next resolution already honours the saved 45s floor. EWMA
+      // 6s x 5 = 30s, which sits below the floor.
+      const { resolveProxyChannelFirstByteTimeoutMs } = await import('../../services/proxyChannelRetry.js');
+      expect(resolveProxyChannelFirstByteTimeoutMs(0, 6_000)).toBe(45_000);
+
+      // Saving 0 removes the floor immediately as well.
+      const cleared = await app.inject({
+        method: 'PUT',
+        url: '/api/settings/runtime',
+        payload: { proxyFirstByteWindowFloorSec: 0 },
+      });
+      expect(cleared.statusCode).toBe(200);
+      expect(resolveProxyChannelFirstByteTimeoutMs(0, 6_000)).toBe(30_000);
+    } finally {
+      (config as any).proxyFirstByteTimeoutSec = previousCeiling;
+      (config as any).proxyFirstByteWindowFloorSec = previousFloor;
+    }
+  });
+
   it('persists and returns disable cross protocol fallback from runtime settings', async () => {
     const updateResponse = await app.inject({
       method: 'PUT',

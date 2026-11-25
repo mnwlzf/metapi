@@ -1,8 +1,8 @@
 import { config } from '../config.js';
 import {
   PROXY_FIRST_BYTE_ADAPTIVE_MIN_SAMPLES,
-  PROXY_FIRST_BYTE_WINDOW_FLOOR_MS,
   resolveProxyChannelFirstByteTimeoutMs,
+  resolveProxyFirstByteFloorMs,
 } from '../services/proxyChannelRetry.js';
 import {
   estimateFirstByteWindowMs,
@@ -55,7 +55,10 @@ export function resolveSurfaceFirstByteWindowMs(input: {
   };
   const learnedMs = estimateFirstByteWindowMs({
     key,
-    floorMs: PROXY_FIRST_BYTE_WINDOW_FLOOR_MS,
+    // The floor is operator-owned (page setting, default 30s): the estimator may
+    // narrow the window for a fast bucket, but never below what the operator
+    // considers a safe wait for a first token.
+    floorMs: resolveProxyFirstByteFloorMs(),
     ceilingMs: configuredCeilingMs,
     nowMs: input.nowMs,
   });

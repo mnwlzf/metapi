@@ -172,6 +172,15 @@ export function buildConfig(env: NodeJS.ProcessEnv) {
     // Default 30s: cut dead/slow channels before full generation hangs failover.
     // 0 still disables. Streaming requests that already emit the first token continue.
     proxyFirstByteTimeoutSec: Math.max(0, Math.trunc(parseNumber(env.PROXY_FIRST_BYTE_TIMEOUT_SEC, 30))),
+    // Lower bound of the *streaming* first-byte window. The adaptive estimator may
+    // pick a window narrower than the ceiling (a fast bucket), but never narrower
+    // than this floor. The settings page owns this value
+    // (`proxy_first_byte_window_floor_sec`); this env value is only the default
+    // used when nothing has been saved, so a page save always wins.
+    // Default 30s: the previous hard-coded 8s cut reasoning models off before
+    // their first token, and the log they produced was indistinguishable from an
+    // upstream failure.
+    proxyFirstByteWindowFloorSec: Math.max(0, Math.trunc(parseNumber(env.PROXY_FIRST_BYTE_WINDOW_FLOOR_SEC, 30))),
     tokenRouterFailureCooldownMaxSec: normalizeTokenRouterFailureCooldownMaxSec(
       parseNumber(env.TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC, TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC_CEILING),
     ) ?? TOKEN_ROUTER_FAILURE_COOLDOWN_MAX_SEC_CEILING,

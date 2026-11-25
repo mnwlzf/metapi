@@ -180,6 +180,7 @@ Metapi 当前有三类主要配置入口：
 | `PROXY_LOG_RETENTION_PRUNE_INTERVAL_MINUTES` | 代理日志清理任务执行间隔（分钟） | `30` |
 | `MODEL_AVAILABILITY_PROBE_TIMEOUT_MS` | 按需模型探测单次超时（毫秒） | `30000` |
 | `PROXY_FIRST_BYTE_TIMEOUT_SEC` | 单次通道首字超时（秒）；0 关闭 | `30` |
+| `PROXY_FIRST_BYTE_WINDOW_FLOOR_SEC` | 流式首字窗口下限（秒）；设置页「首字窗口下限」保存后优先于它；0 = 不设下限 | `30` |
 | `PROXY_STICKY_SESSION_TTL_MS` | soft sticky / 会话粘性 TTL（毫秒） | `30000` |
 | `PROXY_CHANNEL_FAILOVER_BUDGET_MS` | 多通道 failover 总预算（毫秒）；0 用 soft 默认 30s | `0` |
 
