@@ -117,6 +117,42 @@ export function isManagedSub2ApiTokenDue(
   return tokenExpiresAt - nowMs <= SUB2API_MANAGED_REFRESH_LEAD_MS;
 }
 
+/**
+ * Does the CURRENT access token still work upstream?
+ *
+ * The refresh token and the access token die at different times: a relay may
+ * revoke the refresh token while the access token keeps serving traffic for
+ * hours. Expiring the account on a refresh failure alone therefore throws away
+ * working capacity — and an expired account is skipped by the scheduler, so it
+ * never comes back on its own.
+ *
+ * `unknown` (network error, 5xx, timeout) is deliberate: only an explicit auth
+ * rejection is proof the session is dead.
+ */
+export async function probeSub2ApiAccessTokenLiveness(params: {
+  site: { url: string; [key: string]: unknown };
+  accessToken: string;
+  extraConfig: string | null;
+}): Promise<'valid' | 'rejected' | 'unknown'> {
+  const accessToken = normalizeNonEmptyString(params.accessToken);
+  const siteUrl = normalizeNonEmptyString(params.site?.url);
+  if (!accessToken || !siteUrl) return 'unknown';
+
+  const endpoint = `${siteUrl.replace(/\/+$/, '')}/api/v1/auth/me`;
+  try {
+    const response = await fetchWithManagementTimeout(endpoint, withSiteRecordProxyRequestInit(
+      params.site as never,
+      { method: 'GET', headers: { Authorization: `Bearer ${accessToken}` } },
+      resolveProxyUrlFromExtraConfig(params.extraConfig),
+    ));
+    if (response.status >= 200 && response.status < 300) return 'valid';
+    if (response.status === 401 || response.status === 403) return 'rejected';
+    return 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 export async function refreshSub2ApiManagedSession(params: {
   account: typeof schema.accounts.$inferSelect;
   site: typeof schema.sites.$inferSelect;
