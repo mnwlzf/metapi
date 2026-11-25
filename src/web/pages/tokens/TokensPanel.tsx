@@ -203,6 +203,24 @@ const buildGroupOptionLabel = (detail: TokenGroupDetail | undefined, fallback: s
   return parts.join(' · ');
 };
 
+/**
+ * Group keys that already have at least one token on this account.
+ *
+ * A token stores the upstream group key in `token_group`, and the group picker
+ * uses that same key as its option value (a numeric id on sub2api, a name on
+ * new-api), so plain set membership answers "does this group already have a
+ * token" without another request: the token list is already in memory.
+ */
+const buildExistingGroupKeySet = (tokens: any[], accountId: number | null | undefined): Set<string> => {
+  const keys = new Set<string>();
+  if (!accountId) return keys;
+  for (const token of tokens) {
+    if (Number(token?.accountId) !== Number(accountId)) continue;
+    keys.add(String(token?.tokenGroup || '').trim() || 'default');
+  }
+  return keys;
+};
+
 /** Plain-text group description for the mobile card (no badges there). */
 const formatTokenGroupText = (token: any): string => {
   const key = String(token?.tokenGroup || '').trim();
@@ -566,6 +584,19 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     () => sessionAccounts.find((account) => account.id === form.accountId) || null,
     [form.accountId, sessionAccounts],
   );
+
+  // Which of the selected account's groups already have a token. Drives the
+  // "已创建 / 未创建" marker in the group picker so the operator can see at a
+  // glance which groups still need one.
+  const addAccountExistingGroups = useMemo(
+    () => buildExistingGroupKeySet(tokens, form.accountId),
+    [tokens, form.accountId],
+  );
+  const addGroupCoverage = useMemo(() => {
+    const options = groupOptions.length > 0 ? groupOptions : ['default'];
+    const created = options.filter((group) => addAccountExistingGroups.has(group)).length;
+    return { total: options.length, created, pending: options.length - created };
+  }, [groupOptions, addAccountExistingGroups]);
 
   useEffect(() => {
     const params = new URLSearchParams(location.search);
@@ -1422,13 +1453,24 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
             <ModernSelect
               value={form.group || ''}
               onChange={(nextValue) => setForm((prev) => ({ ...prev, group: nextValue }))}
-              options={(groupOptions.length > 0 ? groupOptions : ['default']).map((group) => ({
-                value: group,
-                label: buildGroupOptionLabel(findGroupDetail(groupCatalog, group), group),
-              }))}
+              options={(groupOptions.length > 0 ? groupOptions : ['default']).map((group) => {
+                const hasToken = addAccountExistingGroups.has(group);
+                return {
+                  value: group,
+                  label: buildGroupOptionLabel(findGroupDetail(groupCatalog, group), group),
+                  // Second line in the dropdown: a group that already has a token
+                  // needs no action, one without is a gap to fill.
+                  description: hasToken ? tr('已创建令牌') : tr('未创建令牌'),
+                };
+              })}
               placeholder={groupLoading ? tr('分组加载中...') : tr('选择分组')}
               disabled={!form.accountId || groupLoading}
             />
+            {form.accountId && !groupLoading && addGroupCoverage.pending > 0 ? (
+              <div style={{ fontSize: 11, color: 'var(--color-warning)', marginTop: 4 }}>
+                {`${tr('共')} ${addGroupCoverage.total} ${tr('个分组')}，${addGroupCoverage.pending} ${tr('个还没有令牌')}`}
+              </div>
+            ) : null}
           </div>
           <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, color: 'var(--color-text-secondary)' }}>
