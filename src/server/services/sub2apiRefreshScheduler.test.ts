@@ -195,15 +195,21 @@ describe('sub2apiRefreshScheduler', () => {
 
     const result = await executeSub2ApiManagedRefreshPass({ nowMs });
 
+    // `missing_expiry` refreshes too: an account that never recorded
+    // `tokenExpiresAt` used to be skipped forever, so its session silently
+    // expired and every management call (group catalog, balance, token sync)
+    // started answering 401. A missing expiry is treated as due, and the
+    // refresh writes a real one.
     expect(result).toMatchObject({
       scanned: 5,
-      refreshed: 2,
+      refreshed: 3,
       failed: 0,
-      skipped: 3,
+      skipped: 2,
     });
     expect(result.refreshedAccountIds.sort((a, b) => a - b)).toEqual([
       accountIds.due,
       accountIds.expired,
+      accountIds.missing_expiry,
     ].sort((a, b) => a - b));
     expect(result.failedAccountIds).toEqual([]);
     expect(
@@ -213,7 +219,11 @@ describe('sub2apiRefreshScheduler', () => {
     ).toEqual([
       accountIds.due,
       accountIds.expired,
+      accountIds.missing_expiry,
     ].sort((a, b) => a - b));
+    // The one that is still valid, and the one with no refresh token at all.
+    expect(result.refreshedAccountIds).not.toContain(accountIds.later);
+    expect(result.refreshedAccountIds).not.toContain(accountIds.missing_refresh_token);
   });
 
   it('refreshes due sub2api accounts with bounded concurrency instead of serially', async () => {

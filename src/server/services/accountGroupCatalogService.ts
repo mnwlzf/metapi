@@ -24,7 +24,18 @@ import { withAccountProxyOverride } from './siteProxy.js';
  */
 
 const CATALOG_TTL_MS = 5 * 60 * 1000;
-const CATALOG_LOAD_TIMEOUT_MS = 8_000;
+/**
+ * Budget for one upstream catalog read.
+ *
+ * 8s was too tight for relay sites whose management API occasionally takes tens
+ * of seconds (measured >20s on sub.sailapi.top, while a second call answered in
+ * 1.7s): the read timed out, the token list fell back to a bare `#key`, and the
+ * rate disappeared from every row even though the credential was fine.
+ */
+const CATALOG_LOAD_TIMEOUT_MS = (() => {
+  const raw = Number.parseInt(String(process.env.GROUP_CATALOG_TIMEOUT_MS ?? ''), 10);
+  return Number.isFinite(raw) && raw >= 3_000 ? raw : 15_000;
+})();
 /**
  * How long an already-loaded catalog may still be served after a refresh fails.
  * A transient upstream error must not blank the multipliers the token list
@@ -140,6 +151,15 @@ export async function loadAccountGroupCatalogWithMeta(
     return { catalog: cached.catalog, fetchedAt: cached.fetchedAt, error: null };
   }
 
+  // Stale-while-revalidate: a slow management API must not block a page render.
+  // Serve the last good catalog immediately and refresh in the background — the
+  // UI already labels the age of the value, which is what makes showing old data
+  // honest. A forced refresh (the "刷新分组倍率" button) always waits.
+  if (!forceRefresh && cached && now - cached.fetchedAt < CATALOG_MAX_STALE_MS) {
+    void loadAccountGroupCatalogWithMeta(accountId, { forceRefresh: true }).catch(() => {});
+    return { catalog: cached.catalog, fetchedAt: cached.fetchedAt, error: null };
+  }
+
   const running = catalogInflight.get(accountId);
   if (running) return running;
 
@@ -162,7 +182,7 @@ export async function loadAccountGroupCatalogWithMeta(
       // circuit here too, with an empty list).
       return { catalog: [], fetchedAt: null, error: 'upstream returned no groups' };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = describeCatalogFailure(error instanceof Error ? error.message : String(error));
       // Without this the token list silently showed "#key" and nobody could tell
       // whether upstream stopped publishing groups or our read broke.
       console.warn(`[group-catalog] account ${accountId} group catalog read failed: ${message}`);
@@ -176,6 +196,21 @@ export async function loadAccountGroupCatalogWithMeta(
 
   catalogInflight.set(accountId, task);
   return task;
+}
+
+/**
+ * Turn a transport-level failure into something the operator can act on. An
+ * expired session and a slow endpoint need different fixes, and the raw
+ * "HTTP 401 …" / "group catalog timeout after 15000ms" text does not say so.
+ */
+function describeCatalogFailure(message: string): string {
+  if (/40[13]\b|token[_ ]?expired|unauthorized|not logged in/i.test(message)) {
+    return `${message}（账号会话已过期或未授权：请重新授权该账号；sub2api 账号会自动刷新会话，new-api 需要重新登录）`;
+  }
+  if (/timeout/i.test(message)) {
+    return `${message}（上游分组接口响应过慢，可调大 GROUP_CATALOG_TIMEOUT_MS）`;
+  }
+  return message;
 }
 
 /**

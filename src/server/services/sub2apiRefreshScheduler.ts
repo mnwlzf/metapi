@@ -51,7 +51,7 @@ function shouldRefreshManagedSub2ApiAccount(input: {
   if (normalizeLifecycleStatus(input.site.status) !== ACTIVE_STATUS) return false;
 
   const managedAuth = getSub2ApiAuthFromExtraConfig(input.account.extraConfig);
-  if (!managedAuth?.refreshToken || !managedAuth.tokenExpiresAt) return false;
+  if (!managedAuth?.refreshToken) return false;
 
   // Skip accounts whose last refresh attempt failed within the backoff window.
   // A persistent upstream failure (e.g. HTTP 405 on the refresh endpoint) must
@@ -59,6 +59,14 @@ function shouldRefreshManagedSub2ApiAccount(input: {
   if (isRefreshBackoffActive(managedAuth.refreshRetryAtMs, input.nowMs)) {
     return false;
   }
+
+  // A missing `tokenExpiresAt` used to mean "never refresh this account", so the
+  // session silently expired and every management call (group catalog, balance,
+  // token sync) started failing with 401 — the accounts looked broken instead of
+  // stale. We cannot prove a missing expiry is still valid, so treat it as due;
+  // a successful refresh records `tokenExpiresAt` and the account returns to the
+  // normal schedule, while a failing one is bounded by the same backoff.
+  if (managedAuth.tokenExpiresAt == null) return true;
 
   return isManagedSub2ApiTokenDue(managedAuth.tokenExpiresAt, input.nowMs);
 }
