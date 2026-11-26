@@ -113,6 +113,20 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     expect((await db.select().from(schema.routeChannels).all()).map((row) => row.tokenId)).toEqual([b.id]);
   });
 
+  it('hides manually banned key-model pairs from probe-plan details but keeps other keys', async () => {
+    const { site, account, a, b } = await seed();
+    await ban(account.id, a.id);
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id, accountId: account.id, tokenId: b.id, modelName: 'gpt-4o', source: 'probe',
+    }).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const plan = await getModelProbePlan();
+    const model = plan.models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.keyResults.map((key) => key.keyId)).toEqual([b.id]);
+    expect(model?.keyResults[0]?.routeState).toBe('probe-disabled');
+  });
+
   it('preserves probe provenance on save and converts only explicit bans to manual', async () => {
     const { site, account, a, b } = await seed();
     await db.insert(schema.siteDisabledModels).values([a, b].map((token) => ({ siteId: site.id, accountId: account.id, tokenId: token.id, modelName: 'gpt-4o', source: 'probe' })) ).run();

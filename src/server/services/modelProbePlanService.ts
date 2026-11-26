@@ -269,14 +269,15 @@ export async function getModelProbePlan() {
   for (const probe of latestProbes) {
     if (probe.tokenId != null) addCandidate(probe.tokenId, probe.modelName);
   }
+  const getMatchingDisables = (row: typeof candidateRows[number], modelName: string) => disabledRows.filter((item) => (
+    (item.siteId === row.siteId)
+    && (item.accountId == null || item.accountId === row.accountId)
+    && (item.tokenId === 0 || item.tokenId === row.tokenId)
+    && matchesDisabledModelName(String(item.modelName || ''), modelName)
+  ));
   const attachKeyDetails = (row: typeof candidateRows[number]) => {
     const modelName = String(row.modelName || '');
-    const matchingDisables = disabledRows.filter((item) => (
-      (item.siteId === row.siteId)
-      && (item.accountId == null || item.accountId === row.accountId)
-      && (item.tokenId === 0 || item.tokenId === row.tokenId)
-      && matchesDisabledModelName(String(item.modelName || ''), modelName)
-    ));
+    const matchingDisables = getMatchingDisables(row, modelName);
     const disable = matchingDisables.find((item) => item.source === 'manual' || item.source === 'policy')
       ?? matchingDisables[0];
     const probe = latestProbeByCell.get(`token:${row.tokenId}:${modelName.toLowerCase()}`) ?? null;
@@ -308,6 +309,7 @@ export async function getModelProbePlan() {
   const detailsByModel = new Map<string, ReturnType<typeof attachKeyDetails>[]>();
   for (const row of candidateRows) {
     const key = String(row.modelName || '').toLowerCase();
+    if (getMatchingDisables(row, String(row.modelName || '')).some((item) => item.source === 'manual')) continue;
     const rows = detailsByModel.get(key) ?? [];
     rows.push(attachKeyDetails(row));
     detailsByModel.set(key, rows);
