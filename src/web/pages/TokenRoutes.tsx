@@ -1278,7 +1278,7 @@ export default function TokenRoutes() {
     const result = await requestConfirmation({
       title: tr('确认屏蔽模型'),
       description: (
-        <>{tr('将模型「')}<strong>{modelName}</strong>{tr('」加入账号「')}<strong>{accountLabel}</strong>」（{tr('站点')} {siteName}）的禁用列表。<br />{tr('执行后将自动触发路由重建，该账号下此模型的通道将不再生成，同一站点的其他账号不受影响。')}</>
+        <>将模型「<strong>{modelName}</strong>」加入账号「<strong>{accountLabel}</strong>」（{siteName}）的 {channel.tokenId ? `key #${channel.tokenId}` : '账号直连 key'} 禁用列表。<br />该 key 不再探活或路由此模型，其他 key 不受影响。</>
       ),
       confirmText: tr('确认屏蔽'),
       tone: 'warning',
@@ -1286,17 +1286,9 @@ export default function TokenRoutes() {
     if (!result.confirmed) return;
 
     try {
-      const detail = await api.getAccountModels(accountId) as { models?: Array<{ name: string; disabled?: boolean }> };
-      const currentModels = (detail?.models || [])
-        .filter((m) => m.disabled)
-        .map((m) => m.name);
-      if (currentModels.includes(modelName)) {
-        toast.info(`模型「${modelName}」已在账号「${accountLabel}」的禁用列表中`);
-        return;
-      }
-      await api.updateAccountDisabledModels(accountId, [...currentModels, modelName]);
-      toast.success(`已将「${modelName}」加入账号「${accountLabel}」的禁用列表，正在重建路由...`);
-      await api.rebuildRoutes(false);
+      const result = await api.setAccountModelDisabled(accountId, channel.tokenId || 0, modelName, true);
+      if (result.rebuilt === false) toast.error('已禁用此 key 的模型，但路由整理失败，请刷新路由');
+      else toast.success(`已禁用此 key 的「${modelName}」，不再参加探活`);
       invalidateChannels();
       await load();
     } catch (e) {

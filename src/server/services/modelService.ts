@@ -12,6 +12,7 @@ import {
 } from './accountTokenService.js';
 import {resolveProxyUrlFromExtraConfig, requiresManagedAccountTokens, resolvePlatformUserId, supportsDirectAccountRoutingConnection} from './accountExtraConfig.js';
 import { invalidateTokenRouterCache } from './tokenRouter.js';
+import { clearModelsMarketplaceCache } from './modelsMarketplaceCache.js';
 import { resolveModelAvailabilityProbeTimeoutMs } from '../config.js';
 import { setAccountRuntimeHealth } from './accountHealthService.js';
 import { clearAllRouteDecisionSnapshots } from './routeDecisionSnapshotStore.js';
@@ -30,6 +31,7 @@ import {
   clearAutoDisabledModels,
   isModelDisabledForSite,
   loadSiteDisabledModelsIndex,
+  STICKY_DISABLE_SOURCES,
 } from './siteDisabledModels.js';
 
 const API_TOKEN_DISCOVERY_TIMEOUT_MS = 8_000;
@@ -427,6 +429,7 @@ async function buildProbeCells(params: {
   if (usableAccounts.length === 0) return { cells: [], modelsToProbe: [], tokensCount: 0 };
 
   const cells: ProbeCell[] = [];
+  const stickyDisables = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
   const modelOrder: string[] = [];
   const seenModels = new Set<string>();
   const wantedTokenId = params.tokenId == null ? null : Number(params.tokenId);
@@ -485,7 +488,6 @@ async function buildProbeCells(params: {
         .from(schema.tokenModelAvailability)
         .where(and(
           eq(schema.tokenModelAvailability.tokenId, token.id),
-          eq(schema.tokenModelAvailability.available, true),
         ))
         .all();
       const disabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
@@ -515,7 +517,6 @@ async function buildProbeCells(params: {
           .from(schema.modelAvailability)
           .where(and(
             eq(schema.modelAvailability.accountId, account.id),
-            eq(schema.modelAvailability.available, true),
           ))
           .all();
         const accountDisabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
@@ -523,6 +524,7 @@ async function buildProbeCells(params: {
           .where(and(
             eq(schema.siteDisabledModels.siteId, site.id),
             eq(schema.siteDisabledModels.accountId, account.id),
+            inArray(schema.siteDisabledModels.tokenId, [0, token.id]),
           ))
           .all();
         for (const row of [...accountLevel, ...accountDisabled]) {
@@ -537,6 +539,7 @@ async function buildProbeCells(params: {
       tokensCount += 1;
       for (const [key, modelName] of tokenModels) {
         if (wanted && key !== wanted) continue;
+        if (isModelDisabledForSite(stickyDisables, site.id, modelName, account.id, token.id)) continue;
         if (!seenModels.has(key)) {
           seenModels.add(key);
           modelOrder.push(modelName);
@@ -586,7 +589,25 @@ async function loadRecentProbeTimes(accountIds: number[]): Promise<Map<string, n
 }
 
 /** Record "this key serves this model" on the table routing actually reads. */
-async function markCellAvailable(cell: ProbeCell, latencyMs: number | null): Promise<void> {
+async function markCellAvailable(cell: ProbeCell, latencyMs: number | null): Promise<boolean> {
+  if (cell.tokenId === 0) {
+    const previous = await db.select().from(schema.modelAvailability)
+      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
+        eq(schema.modelAvailability.modelName, cell.modelName))).get();
+    await db.update(schema.modelAvailability).set({ available: true, connectivity: true,
+      ...(latencyMs != null ? { latencyMs } : {}), checkedAt: new Date().toISOString() })
+      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
+        eq(schema.modelAvailability.modelName, cell.modelName))).run();
+    return !previous?.available;
+  }
+  const previous = await db.select().from(schema.tokenModelAvailability)
+    .where(and(eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
+      eq(schema.tokenModelAvailability.modelName, cell.modelName))).get();
+  if (!previous) {
+    await db.insert(schema.tokenModelAvailability).values({ tokenId: cell.tokenId,
+      modelName: cell.modelName, available: true, connectivity: true, latencyMs,
+      checkedAt: new Date().toISOString() }).onConflictDoNothing().run();
+  }
   await db.update(schema.tokenModelAvailability)
     .set({
       available: true,
@@ -599,10 +620,18 @@ async function markCellAvailable(cell: ProbeCell, latencyMs: number | null): Pro
       eq(schema.tokenModelAvailability.modelName, cell.modelName),
     ))
     .run();
+  return !previous?.available;
 }
 
 /** Record "this key cannot serve this model", for that key only. */
 async function markCellUnavailable(cell: ProbeCell): Promise<void> {
+  if (cell.tokenId === 0) {
+    await db.update(schema.modelAvailability)
+      .set({ available: false, connectivity: false, checkedAt: new Date().toISOString() })
+      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
+        eq(schema.modelAvailability.modelName, cell.modelName))).run();
+    return;
+  }
   await db.update(schema.tokenModelAvailability)
     .set({ available: false, connectivity: false, checkedAt: new Date().toISOString() })
     .where(and(
@@ -794,7 +823,7 @@ export async function probeSiteModels(
 
       if (status === 'supported') {
         supportedCount += 1;
-        await markCellAvailable(cell, result.latencyMs);
+        if (await markCellAvailable(cell, result.latencyMs)) routeRebuildNeeded = true;
         const recovered = await clearAutoDisabledModels({
           siteId: site.id,
           accountId: cell.account.id,
@@ -842,9 +871,10 @@ export async function probeSiteModels(
 
   // One rebuild for the whole run: rebuilding per cell thrashes the route tables
   // and, on a wide account, costs more time than the probing itself.
+  clearModelsMarketplaceCache();
   if (routeRebuildNeeded && !options?.signal?.aborted) {
     invalidateTokenRouterCache();
-    rebuildTokenRoutesFromAvailability().catch((err) => {
+    await rebuildTokenRoutesFromAvailability().catch((err) => {
       console.warn('[probe] route rebuild failed', err);
     });
   }
@@ -1484,7 +1514,7 @@ export async function rebuildTokenRoutesFromAvailability() {
   ) => {
     const sourceModel = (modelNameRaw || '').trim();
     if (!sourceModel) return;
-    if (isModelDisabledForSite(disabledModelsIndex, siteId, sourceModel, accountId)) return;
+    if (isModelDisabledForSite(disabledModelsIndex, siteId, sourceModel, accountId, tokenId)) return;
     const modelName = canonicalizeModelName(sourceModel) || sourceModel;
     if (!modelCandidates.has(modelName)) modelCandidates.set(modelName, new Map());
     const candidate = { accountId, tokenId, sourceModel };
@@ -1502,6 +1532,14 @@ export async function rebuildTokenRoutesFromAvailability() {
 
   const routes = await db.select().from(schema.tokenRoutes).all();
   const channels = await db.select().from(schema.routeChannels).all();
+  const operatorConfiguredRouteIds = new Set<number>(channels
+    .filter((channel) => channel.manualOverride)
+    .map((channel) => channel.routeId));
+  for (const route of routes) {
+    if (route.displayName || route.displayIcon || route.modelMapping || !route.enabled) {
+      operatorConfiguredRouteIds.add(route.id);
+    }
+  }
 
   let createdRoutes = 0;
   let createdChannels = 0;
@@ -1518,6 +1556,18 @@ export async function rebuildTokenRoutesFromAvailability() {
   }).from(schema.accounts).all();
   for (const row of allAccounts) {
     accountSiteIds.set(row.id, row.siteId);
+  }
+  // Sweep every route, including manually configured and wildcard routes.
+  // Disabled supplier channels must not survive just because their model no
+  // longer has any automatic candidates to enter the per-model loop below.
+  for (let i = channels.length - 1; i >= 0; i--) {
+    const channel = channels[i];
+    const route = routes.find((row) => row.id === channel.routeId);
+    const sourceModel = channel.sourceModel || (route && isExactModelPattern(route.modelPattern) ? route.modelPattern : null);
+    if (!isModelDisabledForSite(disabledModelsIndex, accountSiteIds.get(channel.accountId), sourceModel, channel.accountId, channel.tokenId)) continue;
+    await db.delete(schema.routeChannels).where(eq(schema.routeChannels.id, channel.id)).run();
+    channels.splice(i, 1);
+    removedChannels++;
   }
   const channelsByRouteId = new Map<number, typeof channels>();
   for (const channel of channels) {
@@ -1537,6 +1587,7 @@ export async function rebuildTokenRoutesFromAvailability() {
   // its sources died upstream.
   const groupSourceIdsByRouteId = new Map<number, number[]>();
   for (const row of await db.select().from(schema.routeGroupSources).all()) {
+    operatorConfiguredRouteIds.add(row.sourceRouteId);
     const list = groupSourceIdsByRouteId.get(row.groupRouteId);
     if (list) list.push(row.sourceRouteId);
     else groupSourceIdsByRouteId.set(row.groupRouteId, [row.sourceRouteId]);
@@ -1647,6 +1698,11 @@ export async function rebuildTokenRoutesFromAvailability() {
     if (!modelPattern || !isExactModelPattern(modelPattern) || latestModelNames.has(modelPattern)) {
       continue;
     }
+
+    // Preserve operator configuration and explicit-group source identities.
+    // Empty configured routes are excluded from supplier selectors instead.
+    const isConfigured = operatorConfiguredRouteIds.has(route.id);
+    if (isConfigured) continue;
 
     const routeChannelCount = (channelsByRouteId.get(route.id) ?? []).length;
     if (routeChannelCount > 0) {

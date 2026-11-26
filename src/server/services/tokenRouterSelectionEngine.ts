@@ -8,6 +8,7 @@
  */
 import { schema } from '../db/index.js';
 import { config } from '../config.js';
+import { isModelDisabledForSite } from './siteDisabledModels.js';
 import { proxyChannelCoordinator } from './proxyChannelCoordinator.js';
 import { compareNullableTimeAsc, isContributionCloseToBest, resolveFailureBackoffSec } from './tokenRouterMath.js';
 import { RouteChannelCandidate, RouteMatch } from './tokenRouterTypes.js';
@@ -979,6 +980,19 @@ export function getCandidateEligibilityReasons(
   const bypassSourceModelCheck = options.bypassSourceModelCheck ?? false;
   const excludeChannelIds = options.excludeChannelIds ?? [];
   const nowIso = options.nowIso ?? new Date().toISOString();
+  const disablePolicy = candidate.modelDisablePolicy;
+  if (disablePolicy) {
+    const upstreamModel = resolveModelResolution({
+      requestedModel: options.requestedModel,
+      route: disablePolicy.route,
+      modelMapping: disablePolicy.route.modelMapping,
+      channelSourceModel: candidate.channel.sourceModel,
+    }).upstreamModel;
+    if (isModelDisabledForSite(disablePolicy.index, candidate.site.id, upstreamModel,
+      candidate.account.id, candidate.channel.tokenId)) {
+      addReason('channel_disabled', '此 Key 的模型已禁用', { upstreamModel });
+    }
+  }
 
   // Context-aware routing: a site whose KNOWN effective context window
   // (learned per site×model from upstream errors / manual pins) cannot fit

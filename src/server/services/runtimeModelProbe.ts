@@ -14,11 +14,12 @@ import {
 } from '../proxy-core/runtime/responsesSseFinal.js';
 import { isEndpointDowngradeError } from '../transformers/shared/endpointCompatibility.js';
 import { shouldAbortSameSiteEndpointFallback } from './proxyRetryPolicy.js';
-import type { schema } from '../db/index.js';
+import { schema } from '../db/index.js';
 import { getRandomProbeQuestion, type ProbeQuestion } from './probeQuestionBank.js';
 import { db } from '../db/index.js';
 import { probeLogs } from '../db/schema.js';
 import { and, desc, eq } from 'drizzle-orm';
+import { isModelDisabledForSite, loadSiteDisabledModelsIndex, STICKY_DISABLE_SOURCES } from './siteDisabledModels.js';
 
 export type RuntimeModelProbeStatus = 'supported' | 'unsupported' | 'inconclusive' | 'skipped';
 
@@ -730,6 +731,19 @@ export async function probeRuntimeModel(input: {
   /** Probe run (batch) this attempt belongs to. */
   runId?: string | null;
 }): Promise<RuntimeModelProbeResult> {
+  // Last guard shared by site, marketplace and recovery probes. A queued probe
+  // may have been collected before the operator disabled this key/model.
+  const stickyDisables = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
+  let probeTokenId = input.tokenId;
+  if (!probeTokenId) {
+    const value = String(input.tokenValue || input.account.apiToken || input.account.accessToken || '').trim();
+    const tokens = await db.select().from(schema.accountTokens)
+      .where(eq(schema.accountTokens.accountId, input.account.id)).all();
+    probeTokenId = tokens.find((token) => String(token.token || '').trim() === value)?.id;
+  }
+  if (isModelDisabledForSite(stickyDisables, input.site.id, input.modelName, input.account.id, probeTokenId)) {
+    return { status: 'skipped', latencyMs: null, reason: 'model manually disabled for this key' };
+  }
   if (!isLikelyConversationModel(input.modelName)) {
     return {
       status: 'skipped',

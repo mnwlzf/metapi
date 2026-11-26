@@ -584,8 +584,11 @@ async function buildRouteChannelSummaryMap(routes: RouteRow[]): Promise<Map<numb
 
 export async function tokensRoutes(app: FastifyInstance) {
   // List routes with basic info only (lightweight for selectors)
-  app.get('/api/routes/lite', async () => {
-    return (await listRoutesWithSources()).map((route) => ({
+  app.get<{ Querystring: { availableOnly?: string } }>('/api/routes/lite', async (request) => {
+    const routes = request.query.availableOnly === '1'
+      ? await tokenRouter.getSuppliedRoutes()
+      : await listRoutesWithSources();
+    return routes.map((route) => ({
       id: route.id,
       modelPattern: route.modelPattern,
       displayName: route.displayName,

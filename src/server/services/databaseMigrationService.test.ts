@@ -846,7 +846,10 @@ describe('databaseMigrationService', () => {
         siteDisabledModels: [{
           id: 3,
           siteId: 12,
+          accountId: 9,
+          tokenId: 42,
           modelName: 'claude-opus-4-6',
+          source: 'manual',
           createdAt: '2026-03-14T00:00:00.000Z',
         }],
         accounts: [],
@@ -916,6 +919,9 @@ describe('databaseMigrationService', () => {
     } as any);
 
     expect(statements.some((statement) => statement.table === 'site_disabled_models')).toBe(true);
+    const disabledModelStatement = statements.find((statement) => statement.table === 'site_disabled_models');
+    expect(disabledModelStatement?.columns).toContain('token_id');
+    expect(disabledModelStatement?.values[disabledModelStatement.columns.indexOf('token_id')]).toBe(42);
     expect(statements.some((statement) => statement.table === 'proxy_video_tasks')).toBe(true);
     expect(statements.some((statement) => statement.table === 'proxy_files')).toBe(true);
     expect(statements.some((statement) => statement.table === 'route_group_sources')).toBe(true);

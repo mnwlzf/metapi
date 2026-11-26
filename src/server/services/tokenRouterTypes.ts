@@ -13,6 +13,7 @@ import { schema } from '../db/index.js';
 import type { RouteDecision, RouteDecisionReasonCode, RouteMode } from '../../shared/tokenRouteContract.js';
 import type { DownstreamRoutingPolicy } from './downstreamPolicyTypes.js';
 import type { ModelResolution } from './tokenRouterModelMatching.js';
+import type { SiteDisabledModelsIndex } from './siteDisabledModels.js';
 
 export interface RouteMatch {
   route: RouteRow;
@@ -21,6 +22,10 @@ export interface RouteMatch {
     account: typeof schema.accounts.$inferSelect;
     site: typeof schema.sites.$inferSelect;
     token: typeof schema.accountTokens.$inferSelect | null;
+    modelDisablePolicy?: {
+      index: SiteDisabledModelsIndex;
+      route: Pick<RouteRow, 'displayName' | 'modelMapping'>;
+    };
   }>;
 }
 

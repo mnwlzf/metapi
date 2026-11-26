@@ -650,10 +650,11 @@ export const api = {
     accountId: number,
     models: string[],
     newModelPolicy?: 'auto' | 'disable',
+    tokenId = 0,
   ) =>
     request(`/api/accounts/${accountId}/models/disabled`, {
       method: 'PUT',
-      body: JSON.stringify(newModelPolicy ? { models, newModelPolicy } : { models }),
+      body: JSON.stringify({ models, newModelPolicy, tokenId }),
     }),
   getSiteAvailableModels: (siteId: number) =>
     request(`/api/sites/${siteId}/available-models`),
@@ -726,7 +727,11 @@ export const api = {
     }),
   refreshBalance: (id: number) =>
     request(`/api/accounts/${id}/balance`, { method: 'POST' }),
-  getAccountModels: (id: number) => request(`/api/accounts/${id}/models`),
+  getAccountModels: (id: number, tokenId = 0) => request(`/api/accounts/${id}/models?tokenId=${tokenId}`),
+  setAccountModelDisabled: (accountId: number, tokenId: number, modelName: string, disabled: boolean) =>
+    request(`/api/accounts/${accountId}/models/disabled`, {
+      method: 'PATCH', body: JSON.stringify({ tokenId, modelName, disabled }),
+    }),
   addAccountAvailableModels: (accountId: number, models: string[]) =>
     request(`/api/accounts/${accountId}/models/manual`, {
       method: 'POST',
@@ -803,7 +808,7 @@ export const api = {
 
   // Routes
   getRoutes: () => request('/api/routes'),
-  getRoutesLite: () => request('/api/routes/lite'),
+  getRoutesLite: (availableOnly = false) => request(`/api/routes/lite${availableOnly ? '?availableOnly=1' : ''}`),
   getRoutesSummary: () => request('/api/routes/summary'),
   getRouteChannels: (routeId: number) =>
     request(`/api/routes/${routeId}/channels`),

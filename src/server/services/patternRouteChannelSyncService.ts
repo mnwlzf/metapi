@@ -8,6 +8,7 @@ import {
 import { clearRouteDecisionSnapshot, clearRouteDecisionSnapshots } from './routeDecisionSnapshotStore.js';
 import { matchesModelPattern } from './tokenRouter.js';
 import { normalizeTokenRouteMode } from '../../shared/tokenRouteContract.js';
+import { isModelDisabledForSite, loadSiteDisabledModelsIndex } from './siteDisabledModels.js';
 
 type PatternRouteChannelCandidate = {
   tokenId: number | null;
@@ -207,7 +208,12 @@ async function collectRouteChannelCandidates(
     ? excludedExactModelNames
     : routeCandidates.exactModelNames;
   const availabilityCandidates = await getPatternTokenCandidates(modelPattern, availabilityExclusions);
-  return [...routeCandidates.candidates, ...availabilityCandidates];
+  const disabled = await loadSiteDisabledModelsIndex();
+  const accounts = await db.select({ id: schema.accounts.id, siteId: schema.accounts.siteId }).from(schema.accounts).all();
+  const siteByAccount = new Map<number, number>(accounts.map((row: any) => [row.id, row.siteId]));
+  return [...routeCandidates.candidates, ...availabilityCandidates].filter((candidate) => (
+    !isModelDisabledForSite(disabled, siteByAccount.get(candidate.accountId), candidate.sourceModel, candidate.accountId, candidate.tokenId)
+  ));
 }
 
 // The same (account, token, unit, model) pair must never produce two rows; the

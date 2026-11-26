@@ -14,6 +14,7 @@ export type SiteDisabledModelSource = 'probe' | 'manual' | 'policy';
 /** Disable rows a successful probe is allowed to undo: its own, plus legacy
  *  rows written before provenance was recorded (same writer, unknown label). */
 export const AUTO_RECOVERABLE_DISABLE_SOURCES = ['probe'] as const;
+export const STICKY_DISABLE_SOURCES: SiteDisabledModelSource[] = ['manual', 'policy'];
 
 export type SiteDisabledModelsIndex = Map<number, {
   // Legacy site-wide rows (account_id NULL) — kept for backward compatibility;
@@ -49,6 +50,14 @@ function normalizeRawModelName(modelName: string): string {
 
 function hasFreeSuffix(modelName: string): boolean {
   return /:free$/i.test(String(modelName || '').trim()) || /-free$/i.test(String(modelName || '').trim());
+}
+
+/** The same alias/free-variant rules used by the disable index. */
+export function matchesDisabledModelName(disabledName: string, modelName: string): boolean {
+  if (normalizeRawModelName(disabledName) === normalizeRawModelName(modelName)) return true;
+  return hasFreeSuffix(disabledName) === hasFreeSuffix(modelName)
+    && !!canonicalizeModelName(disabledName)
+    && canonicalizeModelName(disabledName) === canonicalizeModelName(modelName);
 }
 
 /**
@@ -168,16 +177,18 @@ export async function fanoutSiteWideDisabledModels(): Promise<void> {
  * Legacy site-wide rows (account_id NULL) are deleted by the fan-out, but the
  * index still accepts them for backward compatibility during the transition.
  */
-export async function loadSiteDisabledModelsIndex(): Promise<SiteDisabledModelsIndex> {
+export async function loadSiteDisabledModelsIndex(options?: { sources: SiteDisabledModelSource[] }): Promise<SiteDisabledModelsIndex> {
   const rows = await db.select({
     siteId: schema.siteDisabledModels.siteId,
     accountId: schema.siteDisabledModels.accountId,
     tokenId: schema.siteDisabledModels.tokenId,
     modelName: schema.siteDisabledModels.modelName,
+    source: schema.siteDisabledModels.source,
   }).from(schema.siteDisabledModels).all();
 
   const index: SiteDisabledModelsIndex = new Map();
   for (const row of rows) {
+    if (options && !options.sources.includes(row.source as SiteDisabledModelSource)) continue;
     const siteId = Number(row.siteId);
     if (!Number.isFinite(siteId) || siteId <= 0) continue;
     const raw = normalizeRawModelName(row.modelName);
@@ -379,4 +390,17 @@ export function getDisabledTokenIds(
     if (matches(tokenEntry, modelName || '')) disabledTokens.add(tokenId);
   }
   return disabledTokens;
+}
+
+/** An account catalog is a union, not an additional supplier. Once a key has
+ * a model-specific verdict, callers must use the surviving per-key rows rather
+ * than resurrecting that model through the account-level catalog. */
+export function isAccountModelFallbackDisabled(
+  index: SiteDisabledModelsIndex,
+  siteId: number,
+  modelName: string,
+  accountId: number,
+): boolean {
+  return isModelDisabledForSite(index, siteId, modelName, accountId)
+    || getDisabledTokenIds(index, siteId, modelName, accountId).size > 0;
 }

@@ -7,6 +7,7 @@ import { probeRuntimeModel } from './runtimeModelProbe.js';
 import { isQuotaOrCreditFailureText } from './siteFailureClassification.js';
 import { tokenRouter } from './tokenRouter.js';
 import { isExactTokenRouteModelPattern } from '../../shared/tokenRoutePatterns.js';
+import { isModelDisabledForSite, loadSiteDisabledModelsIndex, STICKY_DISABLE_SOURCES } from './siteDisabledModels.js';
 
 type ProbeCandidate = {
   channelId: number;
@@ -173,9 +174,11 @@ async function loadCoolingProbeCandidates(nowIso: string): Promise<ProbeCandidat
     ))
     .all();
 
+  const stickyDisables = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
   return rows.flatMap((row: any) => {
     if (isProviderDirectedCooldown(row)) return [];
     const modelName = resolveProbeModelName(row);
+    if (isModelDisabledForSite(stickyDisables, row.sites.id, modelName, row.accounts.id, row.route_channels.tokenId)) return [];
     const tokenValue = resolveProbeTokenValue(row);
     if (!modelName || !tokenValue) return [];
     return [{
@@ -207,8 +210,10 @@ async function loadActiveProbeCandidates(activeChannelIds: number[]): Promise<Pr
     ))
     .all();
 
+  const stickyDisables = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
   return rows.flatMap((row: any) => {
     const modelName = resolveProbeModelName(row);
+    if (isModelDisabledForSite(stickyDisables, row.sites.id, modelName, row.accounts.id, row.route_channels.tokenId)) return [];
     const tokenValue = resolveProbeTokenValue(row);
     if (!modelName || !tokenValue) return [];
     return [{

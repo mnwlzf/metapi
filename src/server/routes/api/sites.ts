@@ -29,6 +29,7 @@ import { analyzePrimarySiteUrl } from '../../../shared/sitePrimaryUrl.js';
 import { probeSiteModels } from '../../services/modelService.js';
 import {
   isModelDisabledForSite,
+  isAccountModelFallbackDisabled,
   loadSiteDisabledModelsIndex,
 } from '../../services/siteDisabledModels.js';
 import { rebuildRoutesBestEffort } from '../../services/routeRefreshWorkflow.js';
@@ -1265,13 +1266,13 @@ export async function sitesRoutes(app: FastifyInstance) {
     const disabledModelsIndex = await loadSiteDisabledModelsIndex();
     const models = Array.from(new Set(
       [...accountModels, ...tokenModels]
-        .filter((row) => !isModelDisabledForSite(
+        .filter((row) => 'tokenId' in row ? !isModelDisabledForSite(
           disabledModelsIndex,
           id,
           row.modelName,
           row.accountId,
-          'tokenId' in row ? row.tokenId : null,
-        ))
+          row.tokenId as number,
+        ) : !isAccountModelFallbackDisabled(disabledModelsIndex, id, row.modelName, row.accountId))
         .map((row) => String(row.modelName || '').trim()),
     )).filter((m) => m.length > 0).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 

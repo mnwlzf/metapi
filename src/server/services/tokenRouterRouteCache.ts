@@ -12,6 +12,7 @@ import { db, schema } from '../db/index.js';
 import { config } from '../config.js';
 import type { ChannelRow, RouteMatch, RouteRow } from './tokenRouterTypes.js';
 import { invalidateModelsSurfaceCache } from './modelsSurfaceCache.js';
+import { isModelDisabledForSite, loadSiteDisabledModelsIndex } from './siteDisabledModels.js';
 import {
   isExplicitGroupRoute,
   normalizeChannelSourceModel,
@@ -147,6 +148,7 @@ export async function loadRouteMatch(route: RouteRow, nowMs = Date.now()): Promi
         .all()
       : [];
 
+    const disabledModels = await loadSiteDisabledModelsIndex();
     const mapped = channels.map((row: any) => ({
       channel: {
         ...row.route_channels,
@@ -157,7 +159,10 @@ export async function loadRouteMatch(route: RouteRow, nowMs = Date.now()): Promi
       account: row.accounts,
       site: row.sites,
       token: row.account_tokens,
-    }));
+      modelDisablePolicy: { index: disabledModels, route },
+    })).filter((row) => !isModelDisabledForSite(
+      disabledModels, row.site.id, row.channel.sourceModel, row.account.id, row.channel.tokenId,
+    ));
 
     const match = { route, channels: mapped };
     routeMatchCache.set(route.id, {

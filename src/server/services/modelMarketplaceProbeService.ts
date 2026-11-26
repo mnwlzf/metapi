@@ -4,7 +4,9 @@ import { resolveModelAvailabilityProbeTimeoutMs } from '../config.js';
 import { db, schema } from '../db/index.js';
 import { isUsableAccountToken, ACCOUNT_TOKEN_VALUE_STATUS_READY } from './accountTokenService.js';
 import { probeRuntimeModel } from './runtimeModelProbe.js';
-import { isModelDisabledForSite, loadSiteDisabledModelsIndex } from './siteDisabledModels.js';
+import { clearAutoDisabledModels, isAccountModelFallbackDisabled, isModelDisabledForSite, loadSiteDisabledModelsIndex, STICKY_DISABLE_SOURCES } from './siteDisabledModels.js';
+import { rebuildTokenRoutesFromAvailability } from './modelService.js';
+import { clearModelsMarketplaceCache } from './modelsMarketplaceCache.js';
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -63,6 +65,7 @@ export type MarketplaceModelProbeResponse = {
 };
 
 type MarketplaceProbeTarget = {
+  tokenId?: number;
   accountRowId: number | null;
   tokenRowId: number | null;
   /** The model spelling actually discovered from this upstream account/token. */
@@ -378,7 +381,7 @@ async function collectMarketplaceProbeTargets(
   normalized: string,
   options: MarketplaceModelProbeOptions,
 ): Promise<MarketplaceProbeTarget[]> {
-  const disabledModelsIndex = await loadSiteDisabledModelsIndex();
+  const disabledModelsIndex = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
   const canonicalModel = canonicalizeModelName(normalized) || normalized.toLowerCase();
 
   const siteId = Number.isFinite(options.siteId as number) && Number(options.siteId) > 0
@@ -418,7 +421,7 @@ async function collectMarketplaceProbeTargets(
     if (targetsByAccount.has(hit.account.id)) continue;
     // Match the row's own model name only. Checking the bare requested name
     // here too would let a disabled non-free variant block the free variant.
-    if (isModelDisabledForSite(disabledModelsIndex, hit.site.id, hit.modelName, hit.account.id)) {
+    if (isAccountModelFallbackDisabled(disabledModelsIndex, hit.site.id, hit.modelName, hit.account.id)) {
       continue;
     }
     targetsByAccount.set(hit.account.id, {
@@ -461,7 +464,7 @@ async function collectMarketplaceProbeTargets(
   for (const hit of tokenHits) {
     if (!isUsableAccountToken(hit.token)) continue;
     // Own model name only — see the account-targets loop above.
-    if (isModelDisabledForSite(disabledModelsIndex, hit.site.id, hit.modelName, hit.account.id)) {
+    if (isModelDisabledForSite(disabledModelsIndex, hit.site.id, hit.modelName, hit.account.id, hit.token.id)) {
       continue;
     }
     if (targetsByAccount.has(hit.account.id)) {
@@ -469,12 +472,14 @@ async function collectMarketplaceProbeTargets(
       if (!existing.tokenValue) {
         existing.tokenValue = String(hit.token.token || '').trim() || undefined;
         existing.tokenRowId = hit.rowId;
+        existing.tokenId = hit.token.id;
       }
       continue;
     }
     targetsByAccount.set(hit.account.id, {
       accountRowId: null,
       tokenRowId: hit.rowId,
+      tokenId: hit.token.id,
       upstreamModelName: String(hit.modelName || normalized),
       account: hit.account,
       site: hit.site,
@@ -500,6 +505,7 @@ async function probeMarketplaceTarget(
     modelName: target.upstreamModelName || normalized,
     timeoutMs: resolveModelAvailabilityProbeTimeoutMs(),
     tokenValue,
+    tokenId: target.tokenId,
   });
 
   if (probe.status === 'supported' || probe.status === 'unsupported') {
@@ -508,6 +514,7 @@ async function probeMarketplaceTarget(
       await db.update(schema.modelAvailability)
         .set({
           connectivity: probe.status === 'supported',
+          ...(probe.status === 'supported' ? { available: true } : {}),
           latencyMs: probe.latencyMs,
           checkedAt,
         })
@@ -520,11 +527,20 @@ async function probeMarketplaceTarget(
           connectivity: probe.status === 'supported',
           latencyMs: probe.latencyMs,
           checkedAt,
+          ...(probe.status === 'supported' ? { available: true } : {}),
         })
         .where(eq(schema.tokenModelAvailability.id, target.tokenRowId))
         .run();
     }
   }
+
+  if (probe.status === 'supported') {
+    const recovered = await clearAutoDisabledModels({ siteId: target.site.id,
+      accountId: target.account.id, tokenId: target.tokenId,
+      modelNames: [target.upstreamModelName || normalized] });
+    if (recovered.length) await rebuildTokenRoutesFromAvailability();
+  }
+  clearModelsMarketplaceCache();
 
   return {
     modelName: normalized,

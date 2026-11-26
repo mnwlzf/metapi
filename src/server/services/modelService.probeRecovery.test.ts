@@ -149,6 +149,8 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
     const remaining = await db.select().from(schema.siteDisabledModels).all();
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.source).toBe(source);
+    expect(result.probed).toBe(0);
+    expect(probeRuntimeModel).not.toHaveBeenCalled();
   });
 
   it('reports the recovery to the progress stream', async () => {

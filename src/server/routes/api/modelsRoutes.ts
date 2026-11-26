@@ -30,6 +30,7 @@ import { ACCOUNT_TOKEN_VALUE_STATUS_READY } from '../../services/accountTokenSer
 import { canonicalizeModelName } from '../../shared/modelCanonicalization.js';
 import {
   isModelDisabledForSite,
+  isAccountModelFallbackDisabled,
   loadSiteDisabledModelsIndex,
 } from '../../services/siteDisabledModels.js';
 import {getLocalRangeStartUtc} from '../../services/localTimeService.js';
@@ -46,8 +47,8 @@ import {
  * statsRoutes. Registered by direct call so the Fastify encapsulation context
  * and auth hooks stay identical.
  */
-const MODELS_MARKETPLACE_BASE_TTL_MS = 15_000;
-const MODELS_MARKETPLACE_PRICING_TTL_MS = 90_000;
+import { clearModelsMarketplaceCache, readModelsMarketplaceCache, writeModelsMarketplaceCache } from '../../services/modelsMarketplaceCache.js';
+export { clearModelsMarketplaceCache } from '../../services/modelsMarketplaceCache.js';
 
 const limitModelTokenCandidatesRead = createRateLimitGuard({
   bucket: 'models-token-candidates-read',
@@ -73,45 +74,6 @@ const limitModelCheck = createRateLimitGuard({
   windowMs: 60_000,
 });
 
-type ModelsMarketplaceCacheEntry = {
-  expiresAt: number;
-  models: any[];
-};
-
-const modelsMarketplaceCache = new Map<
-  'base' | 'pricing',
-  ModelsMarketplaceCacheEntry
->();
-
-function readModelsMarketplaceCache(includePricing: boolean): any[] | null {
-  const key = includePricing ? 'pricing' : 'base';
-  const cached = modelsMarketplaceCache.get(key);
-  if (!cached) return null;
-  if (Date.now() >= cached.expiresAt) {
-    modelsMarketplaceCache.delete(key);
-    return null;
-  }
-  return cached.models;
-}
-
-function writeModelsMarketplaceCache(
-  includePricing: boolean,
-  models: any[],
-): void {
-  const ttl = includePricing
-    ? MODELS_MARKETPLACE_PRICING_TTL_MS
-    : MODELS_MARKETPLACE_BASE_TTL_MS;
-  const key = includePricing ? 'pricing' : 'base';
-  modelsMarketplaceCache.set(key, {
-    expiresAt: Date.now() + ttl,
-    models,
-  });
-}
-
-export function clearModelsMarketplaceCache(): void {
-  modelsMarketplaceCache.clear();
-}
-
 export function registerModelsRoutes(app: FastifyInstance): void {
   app.get<{ Querystring: { refresh?: string; includePricing?: string } }>(
     '/api/models/marketplace',
@@ -125,7 +87,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
       let refreshJobId: string | null = null;
 
       if (refreshRequested) {
-        modelsMarketplaceCache.clear();
+        clearModelsMarketplaceCache();
         const { task, reused } = startBackgroundTask(
           {
             type: 'model',
@@ -148,7 +110,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
               // marketplace payload cached mid-run is pre-refresh data. Drop it
               // so the next GET rebuilds from the refreshed DB (success OR
               // failure — a partial pass also leaves stale rows behind).
-              modelsMarketplaceCache.clear();
+              clearModelsMarketplaceCache();
             }
           },
         );
@@ -464,7 +426,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
 
         const sourceModel = String(m.modelName || '').trim();
         if (!sourceModel) continue;
-        if (isModelDisabledForSite(disabledModelsIndex, s.id, sourceModel, a.id)) continue;
+        if (isModelDisabledForSite(disabledModelsIndex, s.id, sourceModel, a.id, t.id)) continue;
         const canonicalName = canonicalizeModelName(sourceModel) || sourceModel;
         if (!modelMap[canonicalName]) {
           modelMap[canonicalName] = {
@@ -527,7 +489,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
 
         const sourceModel = String(m.modelName || '').trim();
         if (!sourceModel) continue;
-        if (isModelDisabledForSite(disabledModelsIndex, s.id, sourceModel, a.id)) continue;
+        if (isAccountModelFallbackDisabled(disabledModelsIndex, s.id, sourceModel, a.id)) continue;
         const canonicalName = canonicalizeModelName(sourceModel) || sourceModel;
         if (!modelMap[canonicalName]) {
           modelMap[canonicalName] = {
@@ -808,7 +770,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
       for (const row of rows) {
         const modelName = (row.token_model_availability.modelName || '').trim();
         if (!modelName) continue;
-        if (isModelDisabledForSite(disabledModelsIndex, row.sites.id, modelName, row.accounts.id)) continue;
+        if (isModelDisabledForSite(disabledModelsIndex, row.sites.id, modelName, row.accounts.id, row.account_tokens.id)) continue;
         const accountModelKey = `${row.accounts.id}::${modelName.toLowerCase()}`;
         coveredAccountModelSet.add(accountModelKey);
 
@@ -858,7 +820,7 @@ export function registerModelsRoutes(app: FastifyInstance): void {
         if (!requiresManagedAccountTokens(row)) continue;
         const modelName = (row.modelName || '').trim();
         if (!modelName) continue;
-        if (isModelDisabledForSite(disabledModelsIndex, row.siteId, modelName, row.accountId)) continue;
+        if (isAccountModelFallbackDisabled(disabledModelsIndex, row.siteId, modelName, row.accountId)) continue;
         const coverageKey = `${row.accountId}::${modelName.toLowerCase()}`;
         if (coveredAccountModelSet.has(coverageKey)) continue;
         if (!modelsWithoutToken[modelName]) modelsWithoutToken[modelName] = [];

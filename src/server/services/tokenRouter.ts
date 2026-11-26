@@ -513,11 +513,26 @@ export class TokenRouter {
    * Get all available models (aggregated from all routes).
    */
   async getAvailableModels(): Promise<string[]> {
-    const routes = await loadEnabledRoutes();
+    const routes = await this.getSuppliedRoutes();
     const exposed = buildVisibleEnabledRoutes(routes)
       .map((route) => getExposedModelNameForRoute(route).trim())
       .filter((name) => name.length > 0);
     return Array.from(new Set(exposed));
+  }
+
+  /** Selector availability ignores temporary cooldowns, but requires at least
+   * one enabled supplier that survives the persistent model-disable policy. */
+  async getSuppliedRoutes(): Promise<RouteMatch['route'][]> {
+    const routes = await loadEnabledRoutes();
+    const supplied = await Promise.all(routes.map(async (route) => {
+      const match = await loadRouteMatch(route);
+      return match.channels.some((candidate) => getCandidateEligibilityReasons(candidate, {
+        requestedModel: getExposedModelNameForRoute(route),
+        bypassSourceModelCheck: true,
+        ignoreChannelCooldown: true,
+      }).length === 0) ? route : null;
+    }));
+    return supplied.filter((route): route is RouteMatch['route'] => route !== null);
   }
 
   // --- Private methods ---

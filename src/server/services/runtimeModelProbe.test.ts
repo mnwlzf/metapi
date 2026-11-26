@@ -28,8 +28,13 @@ vi.mock('./siteApiEndpointService.js', () => ({
 }));
 
 const probeLogsInsertMock = vi.fn();
+const disabledRowsMock = vi.fn();
 
 vi.mock('../db/index.js', () => ({
+  schema: {
+    siteDisabledModels: { siteId: {}, accountId: {}, tokenId: {}, modelName: {}, source: {} },
+    accountTokens: { accountId: {}, token: {} },
+  },
   db: {
     insert: () => ({
       values: (values: unknown) => {
@@ -46,7 +51,9 @@ vi.mock('../db/index.js', () => ({
     // the verdict 'inconclusive', which is what these cases assert.
     select: () => ({
       from: () => ({
+        all: async () => disabledRowsMock(),
         where: () => ({
+          all: async () => [],
           orderBy: () => ({
             limit: () => ({ all: async () => [] }),
           }),
@@ -90,6 +97,7 @@ describe('probeRuntimeModel', () => {
     buildOauthProviderHeadersMock.mockReset();
     requireSiteApiBaseUrlMock.mockReset();
     probeLogsInsertMock.mockReset();
+    disabledRowsMock.mockReset().mockReturnValue([]);
 
     getOauthInfoFromAccountMock.mockReturnValue(null);
     buildOauthProviderHeadersMock.mockReturnValue({});
@@ -107,6 +115,26 @@ describe('probeRuntimeModel', () => {
     });
     resolveChannelProxyUrlMock.mockReturnValue(null);
     withSiteRecordProxyRequestInitMock.mockImplementation(async (_site: unknown, init: RequestInit) => init);
+  });
+
+  it('skips a queued probe when its key/model has been manually banned', async () => {
+    disabledRowsMock.mockReturnValue([{ siteId: site.id, accountId: account.id,
+      tokenId: 7, modelName: 'gpt-5.4', source: 'manual' }]);
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+    const result = await probeRuntimeModel({ site, account, modelName: 'gpt-5.4', tokenId: 7, timeoutMs: 100 });
+    expect(result.status).toBe('skipped');
+    expect(resolveUpstreamEndpointCandidatesMock).not.toHaveBeenCalled();
+    expect(dispatchRuntimeRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps automatic bans eligible for runtime recovery probes', async () => {
+    disabledRowsMock.mockReturnValue([{ siteId: site.id, accountId: account.id,
+      tokenId: 7, modelName: 'gpt-5.4', source: 'probe' }]);
+    resolveUpstreamEndpointCandidatesMock.mockRejectedValue(new Error('recovery attempted'));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+    const result = await probeRuntimeModel({ site, account, modelName: 'gpt-5.4', tokenId: 7, timeoutMs: 100 });
+    expect(result.status).toBe('inconclusive');
+    expect(result.reason).toContain('recovery attempted');
   });
 
   it('returns an inconclusive result instead of throwing when endpoint resolution fails', async () => {

@@ -171,7 +171,7 @@ describe('Accounts edit panel', () => {
       await flushMicrotasks();
 
       // Should call getAccountModels to open the model management modal
-      expect(apiMock.getAccountModels).toHaveBeenCalledWith(1);
+      expect(apiMock.getAccountModels).toHaveBeenCalledWith(1, 0);
     } finally {
       root?.unmount();
     }
@@ -270,7 +270,7 @@ describe('Accounts edit panel', () => {
       totalCount: 1,
       disabledCount: 0,
     });
-    apiMock.rebuildRoutes.mockRejectedValue(new Error('rebuild failed'));
+    apiMock.updateAccountDisabledModels.mockResolvedValue({ rebuilt: false });
 
     let root!: WebTestRenderer;
     try {
@@ -309,8 +309,8 @@ describe('Accounts edit panel', () => {
       });
       await flushMicrotasks();
 
-      expect(apiMock.updateAccountDisabledModels).toHaveBeenCalledWith(1, [], 'auto');
-      expect(apiMock.rebuildRoutes).toHaveBeenCalledWith(false, false);
+      expect(apiMock.updateAccountDisabledModels).toHaveBeenCalledWith(1, [], 'auto', 0);
+      expect(apiMock.rebuildRoutes).not.toHaveBeenCalled();
       expect(toastMock.error).toHaveBeenCalledWith('模型禁用设置已保存，但路由重建失败，请手动刷新路由');
       expect(toastMock.success).not.toHaveBeenCalledWith('模型禁用设置已保存，路由已重建');
     } finally {

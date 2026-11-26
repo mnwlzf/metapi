@@ -498,7 +498,7 @@ export default function DownstreamKeys() {
       const [summaryRes, rawRes, routesRes] = await Promise.all([
         api.getDownstreamApiKeysSummary({ range }),
         api.getDownstreamApiKeys(),
-        api.getRoutesLite(),
+        api.getRoutesLite(true),
       ]);
       setSummaryItems(Array.isArray(summaryRes?.items) ? summaryRes.items : []);
       setRawItems(Array.isArray(rawRes?.items) ? rawRes.items : []);

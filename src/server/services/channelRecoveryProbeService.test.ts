@@ -18,6 +18,7 @@ type TokenRouterModule = typeof import('./tokenRouter.js');
 
 describe('channelRecoveryProbeService', () => {
   let db: DbModule['db'];
+  let closeDbConnections: DbModule['closeDbConnections'];
   let schema: DbModule['schema'];
   let runChannelProbeSweep: RecoveryModule['runChannelProbeSweep'];
   let resetChannelProbeState: RecoveryModule['resetChannelProbeState'];
@@ -43,6 +44,7 @@ describe('channelRecoveryProbeService', () => {
     const tokenRouterModule = await import('./tokenRouter.js');
 
     db = dbModule.db;
+    closeDbConnections = dbModule.closeDbConnections;
     schema = dbModule.schema;
     runChannelProbeSweep = recoveryModule.runChannelProbeSweep;
     resetChannelProbeState = recoveryModule.resetChannelProbeState;
@@ -75,12 +77,13 @@ describe('channelRecoveryProbeService', () => {
     await db.delete(schema.sites).run();
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     config.proxySessionChannelConcurrencyLimit = originalConcurrencyLimit;
     resetChannelProbeState();
     resetProxyChannelCoordinatorState();
     invalidateTokenRouterCache();
     resetSiteRuntimeHealthState();
+    await closeDbConnections();
     rmSync(dataDir, { recursive: true, force: true });
     if (originalDataDir === undefined) {
       delete process.env.DATA_DIR;

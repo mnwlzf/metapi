@@ -8,6 +8,9 @@ type AccountModelRow = {
   name: string;
   latencyMs: number | null;
   disabled: boolean;
+  manualDisabled?: boolean;
+  disabledSource?: string | null;
+  inherited?: boolean;
   isManual?: boolean;
 };
 
@@ -15,6 +18,8 @@ type AccountModelModalState = {
   open: boolean;
   newModelPolicy?: 'auto' | 'disable';
   account: any | null;
+  tokenId?: number;
+  tokens?: Array<{ id: number; name: string; tokenGroup?: string | null }>;
   models: AccountModelRow[];
   pendingDisabled: Set<string>;
   loading: boolean;
@@ -29,6 +34,7 @@ type AccountModelsModalProps = {
   inputStyle: React.CSSProperties;
   onClose: () => void;
   onSave: () => void;
+  onTokenChange?: (tokenId: number) => void;
   onRefresh: () => Promise<void> | void;
   onToggleModelDisabled: (modelName: string) => void;
   onNewModelPolicyChange: (policy: 'auto' | 'disable') => void;
@@ -44,6 +50,7 @@ export default function AccountModelsModal({
   inputStyle,
   onClose,
   onSave,
+  onTokenChange,
   onRefresh,
   onToggleModelDisabled,
   onNewModelPolicyChange,
@@ -55,7 +62,8 @@ export default function AccountModelsModal({
 }: AccountModelsModalProps) {
   const [modelSearch, setModelSearch] = React.useState('');
   const searchQuery = modelSearch.trim();
-  const enabledCount = modelModal.models.filter((model) => !modelModal.pendingDisabled.has(model.name)).length;
+  const enabledCount = modelModal.models.filter((model) => !modelModal.pendingDisabled.has(model.name)
+    && model.disabledSource !== 'probe' && !model.inherited).length;
   const filteredModels = searchQuery
     ? modelModal.models.filter((model) => fuzzyMatch(model.name, searchQuery))
     : modelModal.models;
@@ -85,6 +93,14 @@ export default function AccountModelsModal({
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            作用范围
+            <select value={modelModal.tokenId ?? 0} disabled={modelModal.saving} onChange={(event) => onTokenChange?.(Number(event.target.value))} style={{ ...inputStyle, flex: 1 }}>
+              <option value={0}>整个账号（所有 key）</option>
+              {(modelModal.tokens ?? []).map((token) => <option key={token.id} value={token.id}>{token.name} #{token.id}{token.tokenGroup ? ` · ${token.tokenGroup}` : ''}</option>)}
+            </select>
+          </label>
+          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>勾选表示允许使用。手动禁用后不再探活；探活不可用的模型仍会参加恢复探活。</div>
           {/* The rows below may be a previous result: the list row already says
               so, but opening the modal is exactly where it would be misread. */}
           {(() => {
@@ -109,7 +125,7 @@ export default function AccountModelsModal({
               </div>
             );
           })()}
-          <div
+          {modelModal.tokenId === 0 ? <div
             style={{
               display: 'flex',
               alignItems: 'center',
@@ -141,7 +157,7 @@ export default function AccountModelsModal({
                 ? tr('刷新发现新模型时自动保持禁用，直到你手动启用')
                 : tr('刷新发现的新模型立即启用（默认）')}
             </span>
-          </div>
+          </div> : <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>新模型自动启用策略仅适用于整个账号。</div>}
           {modelModal.models.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '32px 0' }}>
               <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
@@ -248,6 +264,7 @@ export default function AccountModelsModal({
                   </div>
                 ) : filteredModels.map((model, idx) => {
                   const isDisabled = modelModal.pendingDisabled.has(model.name);
+                  const probeDisabled = model.disabledSource === 'probe' && !isDisabled;
                   return (
                     <label
                       key={model.name}
@@ -257,15 +274,16 @@ export default function AccountModelsModal({
                         gap: 10,
                         padding: '9px 14px',
                         cursor: 'pointer',
-                        background: isDisabled ? 'var(--color-bg)' : undefined,
+                        background: isDisabled || probeDisabled ? 'var(--color-bg)' : undefined,
                         borderBottom: idx < filteredModels.length - 1 ? '1px solid var(--color-border-light)' : undefined,
-                        opacity: isDisabled ? 0.55 : 1,
+                        opacity: isDisabled || probeDisabled ? 0.55 : 1,
                         transition: 'opacity 0.15s, background 0.15s',
                       }}
                     >
                       <input
                         type="checkbox"
-                        checked={!isDisabled}
+                        checked={!isDisabled && !probeDisabled}
+                        disabled={model.inherited || probeDisabled}
                         onChange={() => onToggleModelDisabled(model.name)}
                         style={{ accentColor: 'var(--color-primary)', width: 15, height: 15, flexShrink: 0 }}
                       />
@@ -302,17 +320,17 @@ export default function AccountModelsModal({
                         </button>
                       ) : null}
                       {isDisabled ? (
-                        <StatusPill tone="danger" style={{ fontSize: 10, flexShrink: 0 }}>{tr('禁用')}</StatusPill>
-                      ) : null}
+                        <StatusPill tone="danger" style={{ fontSize: 10, flexShrink: 0 }}>{model.inherited ? '账号已禁用' : '手动禁用'}</StatusPill>
+                      ) : probeDisabled ? <StatusPill tone="warning" style={{ fontSize: 10, flexShrink: 0 }}>探活不可用 · 等待重探</StatusPill> : null}
                     </label>
                   );
                 })}
               </div>
-              <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>{tr('💡 禁用的模型只对这个 key 生效，同一站点的其他 key 不受影响。')}</div>
+              <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>禁用仅影响所选范围，其他 key 仍可供应时，模型会继续显示在模型广场和密钥模型选项中。</div>
             </>
           )}
 
-          <div style={{ marginTop: 16, padding: '12px', background: 'var(--color-bg-inset)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-sm)' }}>
+          {modelModal.tokenId === 0 ? <div style={{ marginTop: 16, padding: '12px', background: 'var(--color-bg-inset)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-sm)' }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-primary)' }}>{tr('手动添加可用模型')}</div>
             <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 8 }}>{tr('如果您的账号支持某些未在上方列表中显示的模型，可以在此手动添加（多个以英文逗号分隔）。')}</div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -336,7 +354,7 @@ export default function AccountModelsModal({
                 {modelModal.addingManualModels ? <span className="spinner spinner-sm" /> : tr('添加')}
               </button>
             </div>
-          </div>
+          </div> : null}
         </div>
       )}
     </CenteredModal>

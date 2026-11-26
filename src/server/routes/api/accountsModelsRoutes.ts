@@ -1,18 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import { db, schema, runtimeDbDialect } from '../../db/index.js';
 import { and, eq } from 'drizzle-orm';
-import { parseSiteDisabledModelsPayload } from '../../contracts/siteRoutePayloads.js';
-import { parseAccountManualModelsPayload } from '../../contracts/accountsRoutePayloads.js';
-import { invalidateSiteProxyCache } from '../../services/siteProxy.js';
-import { invalidateTokenRouterCache } from '../../services/tokenRouter.js';
-import { setAccountNewModelPolicy } from '../../services/accountNewModelPolicy.js';
-import { rebuildTokenRoutesFromAvailability } from '../../services/modelService.js';
-import { clearModelsMarketplaceCache } from './stats.js';
+import { z } from 'zod';
 import { rebuildRoutesBestEffort } from '../../services/accountMutationWorkflow.js';
-import {
-  getNewModelPolicyFromExtraConfig,
-  normalizeNewModelPolicy,
-} from '../../services/accountExtraConfig.js';
+import { AccountModelScopeError, getAccountModelList, replaceAccountManualDisabledModels, setAccountModelDisabled } from '../../services/accountModelManagementService.js';
+import { parseAccountManualModelsPayload } from '../../contracts/accountsRoutePayloads.js';
 
 /**
  * Per-account model list and per-key disabled/manual overrides.
@@ -22,147 +14,48 @@ import {
  * hook) stays identical to the parent module.
  */
 export function registerAccountModelRoutes(app: FastifyInstance) {
-  // Get model list for an account (available models + disabled status at site level)
-  app.get<{ Params: { id: string } }>(
-    '/api/accounts/:id/models',
-    async (request, reply) => {
-      const accountId = parseInt(request.params.id, 10);
-      if (!Number.isFinite(accountId) || accountId <= 0) {
-        return reply.code(400).send({ message: '账号 ID 无效' });
-      }
+  const scopeSchema = z.object({
+    accountId: z.coerce.number().int().positive(),
+    tokenId: z.coerce.number().int().nonnegative().default(0),
+  });
+  const replaceSchema = z.object({
+    models: z.array(z.string()),
+    newModelPolicy: z.enum(['auto', 'disable']).optional(),
+  });
+  const toggleSchema = z.object({ modelName: z.string().trim().min(1), disabled: z.boolean() });
+  const sendScopeError = (error: unknown, reply: import('fastify').FastifyReply) => {
+    if (error instanceof AccountModelScopeError) return reply.code(error.statusCode).send({ message: error.message });
+    throw error;
+  };
 
-      const account = await db
-        .select()
-        .from(schema.accounts)
-        .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-        .where(eq(schema.accounts.id, accountId))
-        .get();
-
-      if (!account) {
-        return reply.code(404).send({ message: '账号不存在' });
-      }
-
-      const siteId = account.accounts.siteId;
-
-      // Get available models for this account
-      const modelRows = await db
-        .select({
-          modelName: schema.modelAvailability.modelName,
-          available: schema.modelAvailability.available,
-          latencyMs: schema.modelAvailability.latencyMs,
-          isManual: schema.modelAvailability.isManual,
-        })
-        .from(schema.modelAvailability)
-        .where(eq(schema.modelAvailability.accountId, accountId))
-        .all();
-
-      // Disabled models are keyed per account: only this key's own rows apply.
-      const disabledRows = await db
-        .select({ modelName: schema.siteDisabledModels.modelName })
-        .from(schema.siteDisabledModels)
-        .where(and(
-          eq(schema.siteDisabledModels.siteId, siteId),
-          eq(schema.siteDisabledModels.accountId, accountId),
-        ))
-        .all();
-
-      const disabledSet = new Set<string>(disabledRows.map((r) => String(r.modelName)));
-
-      // Merge this key's disabled models into the list even when availability
-      // no longer reports them, so they stay reachable and can be re-enabled.
-      const rowsByName = new Map<string, { latencyMs: unknown; isManual: boolean }>();
-      for (const r of modelRows) {
-        if (!r.available) continue;
-        rowsByName.set(r.modelName, { latencyMs: r.latencyMs, isManual: !!r.isManual });
-      }
-      for (const modelName of disabledSet) {
-        if (!rowsByName.has(modelName)) rowsByName.set(modelName, { latencyMs: null, isManual: false });
-      }
-
-      const models = Array.from(rowsByName.entries())
-        .map(([name, info]) => ({
-          name,
-          latencyMs: info.latencyMs,
-          disabled: disabledSet.has(name),
-          isManual: info.isManual,
-        }))
-        .sort((a: any, b: any) => a.name.localeCompare(b.name));
-
-      return {
-        siteId,
-        siteName: account.sites.name,
-        models,
-        totalCount: models.length,
-        disabledCount: models.filter((m: any) => m.disabled).length,
-        newModelPolicy: getNewModelPolicyFromExtraConfig(account.accounts.extraConfig),
-      };
+  app.get<{ Params: { id: string }; Querystring: { tokenId?: string } }>(
+    '/api/accounts/:id/models', async (request, reply) => {
+      const scope = scopeSchema.safeParse({ accountId: request.params.id, tokenId: request.query.tokenId });
+      if (!scope.success) return reply.code(400).send({ message: 'Invalid account or key ID' });
+      try { return await getAccountModelList(scope.data.accountId, scope.data.tokenId); }
+      catch (error) { return sendScopeError(error, reply); }
     },
   );
 
-  // Replace the disabled models of one key. Site-wide rows are untouched, and
-  // other keys of the same site keep their own sets.
   app.put<{ Params: { id: string }; Body: unknown }>(
-    '/api/accounts/:id/models/disabled',
-    async (request, reply) => {
-      const accountId = parseInt(request.params.id, 10);
-      if (!Number.isFinite(accountId) || accountId <= 0) {
-        return reply.code(400).send({ message: '账号 ID 无效' });
-      }
+    '/api/accounts/:id/models/disabled', async (request, reply) => {
+      const body = replaceSchema.safeParse(request.body);
+      const scope = scopeSchema.safeParse({ accountId: request.params.id,
+        tokenId: (request.body as { tokenId?: unknown } | null)?.tokenId });
+      if (!body.success || !scope.success) return reply.code(400).send({ message: 'Invalid model disable settings' });
+      try { return await replaceAccountManualDisabledModels({ ...scope.data, ...body.data }); }
+      catch (error) { return sendScopeError(error, reply); }
+    },
+  );
 
-      const parsedBody = parseSiteDisabledModelsPayload(request.body);
-      if (!parsedBody.success) {
-        return reply.code(400).send({ error: parsedBody.error });
-      }
-
-      const account = await db
-        .select()
-        .from(schema.accounts)
-        .where(eq(schema.accounts.id, accountId))
-        .get();
-
-      if (!account) {
-        return reply.code(404).send({ message: '账号不存在' });
-      }
-
-      const siteId = account.siteId;
-      const uniqueModels = Array.from(new Set(
-        (parsedBody.data.models as unknown[])
-          .filter((m): m is string => typeof m === 'string')
-          .map((m) => m.trim())
-          .filter((m) => m.length > 0),
-      ));
-
-      await db.transaction(async (tx: any) => {
-        await tx.delete(schema.siteDisabledModels)
-          .where(and(
-            eq(schema.siteDisabledModels.siteId, siteId),
-            eq(schema.siteDisabledModels.accountId, accountId),
-          ))
-          .run();
-
-        if (uniqueModels.length > 0) {
-          await tx.insert(schema.siteDisabledModels).values(
-            // Operator intent: automatic recovery must never undo these.
-            uniqueModels.map((modelName) => ({ siteId, accountId, modelName, source: 'manual' })),
-          ).run();
-        }
-      });
-
-      const rawPolicy = (request.body as { newModelPolicy?: unknown } | null | undefined)?.newModelPolicy;
-      const nextPolicy = normalizeNewModelPolicy(rawPolicy);
-      if (nextPolicy) {
-        await setAccountNewModelPolicy(accountId, nextPolicy);
-      }
-
-      invalidateSiteProxyCache();
-      invalidateTokenRouterCache();
-      clearModelsMarketplaceCache();
-      // Drop channels/routes for this key's now-disabled models immediately.
-      rebuildTokenRoutesFromAvailability().catch((err) => {
-        console.warn('[accounts] rebuild routes after per-key disabled-models update failed', err);
-      });
-
-      return { accountId, siteId, models: uniqueModels };
+  app.patch<{ Params: { id: string }; Body: unknown }>(
+    '/api/accounts/:id/models/disabled', async (request, reply) => {
+      const body = toggleSchema.safeParse(request.body);
+      const scope = scopeSchema.safeParse({ accountId: request.params.id,
+        tokenId: (request.body as { tokenId?: unknown } | null)?.tokenId });
+      if (!body.success || !scope.success) return reply.code(400).send({ message: 'Invalid model disable settings' });
+      try { return await setAccountModelDisabled({ ...scope.data, ...body.data }); }
+      catch (error) { return sendScopeError(error, reply); }
     },
   );
 

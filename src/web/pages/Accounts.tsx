@@ -189,10 +189,15 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
   const [modelModal, setModelModal] = useState<{
     open: boolean;
     account: any | null;
+    tokenId: number;
+    tokens: Array<{ id: number; name: string; tokenGroup?: string | null }>;
     models: Array<{
       name: string;
       latencyMs: number | null;
       disabled: boolean;
+      manualDisabled?: boolean;
+      disabledSource?: string | null;
+      inherited?: boolean;
       isManual?: boolean;
     }>;
     pendingDisabled: Set<string>;
@@ -206,6 +211,8 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
   }>({
     open: false,
     account: null,
+    tokenId: 0,
+    tokens: [],
     models: [],
     pendingDisabled: new Set(),
     newModelPolicy: 'auto',
@@ -661,12 +668,14 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
   const applyLoadedModelModal = (account: any, result: any) => {
     const models = Array.isArray(result?.models) ? result.models : [];
     const disabledSet = new Set<string>(
-      models.filter((m: any) => m.disabled).map((m: any) => m.name as string),
+      models.filter((m: any) => m.manualDisabled ?? m.disabled).map((m: any) => m.name as string),
     );
     setModelModal((s) => ({
       ...s,
       loading: false,
       models,
+      tokenId: result?.tokenId ?? 0,
+      tokens: result?.tokens ?? [],
       pendingDisabled: disabledSet,
       newModelPolicy: result?.newModelPolicy === 'disable' ? 'disable' : 'auto',
       siteName: result?.siteName || account.site?.name || s.siteName,
@@ -681,6 +690,7 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
       closeOnError?: boolean;
       successMessage?: string | null;
       errorMessage?: string;
+      tokenId?: number;
     } = {},
   ) => {
     const requestId = ++modelModalRequestSeqRef.current;
@@ -702,7 +712,8 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
       if (options.refreshUpstream) {
         await api.checkModels(account.id);
       }
-      const result = await api.getAccountModels(account.id);
+      const tokenId = options.tokenId ?? (options.resetBeforeLoad ? 0 : modelModal.tokenId);
+      const result = await api.getAccountModels(account.id, tokenId);
       if (modelModalRequestSeqRef.current !== requestId) return;
       applyLoadedModelModal(account, result);
       if (options.successMessage) {
@@ -741,6 +752,7 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
 
   const toggleModelDisabled = (modelName: string) => {
     setModelModal((s) => {
+      if (s.models.some((model) => model.name === modelName && model.inherited)) return s;
       const next = new Set(s.pendingDisabled);
       if (next.has(modelName)) next.delete(modelName);
       else next.add(modelName);
@@ -753,15 +765,15 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
     const accountId = modelModal.account.id;
     setModelModal((s) => ({ ...s, saving: true }));
     try {
-      await api.updateAccountDisabledModels(
+      const result = await api.updateAccountDisabledModels(
         accountId,
-        Array.from(modelModal.pendingDisabled),
-        modelModal.newModelPolicy,
+        Array.from(modelModal.pendingDisabled).filter((name) => !modelModal.models.some((model) => model.name === name && model.inherited)),
+        modelModal.tokenId === 0 ? modelModal.newModelPolicy : undefined,
+        modelModal.tokenId,
       );
-      try {
-        await api.rebuildRoutes(false, false);
+      if (result?.rebuilt !== false) {
         toast.success(tr('模型禁用设置已保存，路由已重建'));
-      } catch {
+      } else {
         toast.error(tr('模型禁用设置已保存，但路由重建失败，请手动刷新路由'));
       }
       closeModelModal();
@@ -2865,6 +2877,9 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
 
       <AccountModelsModal
         modelModal={modelModal}
+        onTokenChange={(tokenId) => {
+          if (modelModal.account) void loadModelModalModels(modelModal.account, { tokenId });
+        }}
         inputStyle={inputStyle}
         onClose={closeModelModal}
         onSave={saveModelDisabled}
@@ -2881,7 +2896,9 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
           setModelModal((state) => ({ ...state, newModelPolicy: policy }))
         }
         onSetPendingDisabled={(pendingDisabled) =>
-          setModelModal((state) => ({ ...state, pendingDisabled }))
+          setModelModal((state) => ({ ...state, pendingDisabled: new Set([
+            ...pendingDisabled, ...state.models.filter((model) => model.inherited).map((model) => model.name),
+          ]) }))
         }
         onManualInputChange={(value) =>
           setModelModal((state) => ({ ...state, manualModelsInput: value }))

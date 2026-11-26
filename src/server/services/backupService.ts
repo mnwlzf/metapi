@@ -60,7 +60,7 @@ type SettingRow = typeof schema.settings.$inferSelect;
 type BackupAccountRow = Omit<AccountRow, 'balanceUsed' | 'lastCheckinAt' | 'lastBalanceRefresh'>
   & Partial<Pick<AccountRow, 'balanceUsed' | 'lastCheckinAt' | 'lastBalanceRefresh'>>;
 
-type BackupRouteChannelRow = Omit<RouteChannelRow,
+type BackupRouteChannelRow = Pick<RouteChannelRow, 'id' | 'routeId' | 'accountId' | 'tokenId' | 'sourceModel'> & Omit<RouteChannelRow,
   'successCount'
   | 'failCount'
   | 'totalLatencyMs'
@@ -85,6 +85,7 @@ type BackupRouteChannelRow = Omit<RouteChannelRow,
 >>;
 
 type BackupSiteDisabledModelRow = Pick<SiteDisabledModelRow, 'siteId' | 'modelName'> & {
+  tokenId?: number;
   /** Nullable: absent in backups written before per-key disabling. */
   accountId?: number | null;
   /** Nullable: absent in backups written before provenance was recorded. */
@@ -1409,6 +1410,7 @@ async function exportAccountsSection(): Promise<AccountsBackupSection> {
     siteDisabledModels: siteDisabledModels.map((row) => ({
       siteId: row.siteId,
       accountId: row.accountId ?? null,
+      tokenId: row.tokenId ?? 0,
       modelName: row.modelName,
       source: row.source ?? null,
     })),
@@ -1745,6 +1747,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
         await tx.insert(schema.siteDisabledModels).values({
           siteId: row.siteId,
           accountId: row.accountId ?? null,
+          tokenId: row.tokenId ?? 0,
           modelName: row.modelName,
           source: row.source ?? null,
         }).run();
