@@ -55,6 +55,7 @@ export default function ProbePlan() {
   const [typeFilter, setTypeFilter] = useState<ProbeModelType | 'all'>('all');
   const [overrideFilter, setOverrideFilter] = useState<'all' | 'automatic' | 'custom'>('all');
   const [savingModel, setSavingModel] = useState('');
+  const [probingModel, setProbingModel] = useState('');
   const [expandedModel, setExpandedModel] = useState<string | null>(null);
   const planQuery = useQuery({
     queryKey: ['model-probe-plan'],
@@ -89,6 +90,65 @@ export default function ProbePlan() {
     } finally {
       setSavingModel('');
     }
+  }
+
+  async function probeModelNow(model: ProbePlanModel) {
+    const siteIds = [...new Set(model.keyResults.map((key) => key.siteId))].filter((siteId) => siteId > 0);
+    if (siteIds.length === 0) {
+      toast.error(tr('没有可探测的 Key'));
+      return;
+    }
+    setProbingModel(model.modelName);
+    try {
+      let probed = 0;
+      let supported = 0;
+      let unavailable = 0;
+      let estimatedCost = 0;
+      for (const siteId of siteIds) {
+        const result = await api.probeSiteNow(siteId, {
+          scope: 'single',
+          modelName: model.modelName,
+          force: true,
+        }) as {
+          success: boolean;
+          error?: string;
+          probed?: number;
+          supported?: number;
+          unsupported?: number;
+          inconclusive?: number;
+          estimatedCost?: number;
+        };
+        if (!result.success) throw new Error(result.error || tr('探测失败'));
+        probed += Number(result.probed || 0);
+        supported += Number(result.supported || 0);
+        unavailable += Number(result.unsupported || 0) + Number(result.inconclusive || 0);
+        estimatedCost += Number(result.estimatedCost || 0);
+      }
+      await planQuery.refetch();
+      toast.success(`${tr('探测完成')}：${supported}/${probed} ${tr('可用')}，${unavailable} ${tr('不可用或未确认')}，${tr('费用')} ${formatCost(estimatedCost)}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : tr('探测失败'));
+      await planQuery.refetch();
+    } finally {
+      setProbingModel('');
+    }
+  }
+
+  function renderProbeButton(model: ProbePlanModel) {
+    const isProbing = probingModel === model.modelName;
+    return (
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm probe-plan-probe-button"
+        disabled={!!probingModel || model.keyResults.length === 0}
+        title={model.keyResults.length === 0 ? tr('没有可探测的 Key') : tr('探测此模型')}
+        aria-label={`${tr('探测此模型')} ${model.modelName}`}
+        onClick={() => void probeModelNow(model)}
+      >
+        {isProbing ? <span className="spinner spinner-sm" /> : <ProbeIcon />}
+        <span>{isProbing ? tr('探测中...') : tr('手动探测')}</span>
+      </button>
+    );
   }
 
   function renderIntervalControl(model: ProbePlanModel) {
@@ -183,7 +243,12 @@ export default function ProbePlan() {
                 </button>
               )}
               headerActions={<TypeBadge type={model.type} />}
-              footerActions={<div className="probe-plan-mobile-frequency"><span>{tr('探测频率')}</span>{renderIntervalControl(model)}</div>}
+              footerActions={(
+                <div className="probe-plan-mobile-actions">
+                  <div className="probe-plan-mobile-frequency"><span>{tr('探测频率')}</span>{renderIntervalControl(model)}</div>
+                  {renderProbeButton(model)}
+                </div>
+              )}
             >
               <MobileField label={tr('近 7 天请求')} value={model.recentCalls.toLocaleString()} />
               <MobileField label={tr('自动建议')} value={formatInterval(model.automaticIntervalHours)} />
@@ -203,6 +268,7 @@ export default function ProbePlan() {
                 <th>{tr('自动建议')}</th>
                 <th>{tr('当前探测频率')}</th>
                 <th>{tr('模式')}</th>
+                <th>{tr('手动探测')}</th>
               </tr>
             </thead>
             <tbody>
@@ -220,11 +286,12 @@ export default function ProbePlan() {
                   <td className="probe-plan-auto-value">{formatInterval(model.automaticIntervalHours)}</td>
                   <td>{renderIntervalControl(model)}</td>
                   <td><span className={`probe-plan-mode${model.overridden ? ' is-custom' : ''}`}>{model.overridden ? tr('手动') : tr('自动')}</span></td>
+                  <td>{renderProbeButton(model)}</td>
                   </tr>
-                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={6}><KeyDetails model={model} /></td></tr>}
+                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={7}><KeyDetails model={model} /></td></tr>}
                 </Fragment>
               ))}
-              {filteredModels.length === 0 && <tr><td colSpan={6} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
+              {filteredModels.length === 0 && <tr><td colSpan={7} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -258,6 +325,15 @@ function Chevron({ expanded }: { expanded: boolean }) {
   return (
     <svg className={`probe-plan-chevron${expanded ? ' is-expanded' : ''}`} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
       <path strokeLinecap="round" strokeLinejoin="round" d="m5 6 3 3 3-3" />
+    </svg>
+  );
+}
+
+function ProbeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v3m0 12v3M3 12h3m12 0h3M5.64 5.64l2.12 2.12m8.48 8.48 2.12 2.12m0-12.72-2.12 2.12m-8.48 8.48-2.12 2.12" />
+      <circle cx="12" cy="12" r="4" />
     </svg>
   );
 }

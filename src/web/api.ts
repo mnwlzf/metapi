@@ -658,11 +658,11 @@ export const api = {
     }),
   getSiteAvailableModels: (siteId: number) =>
     request(`/api/sites/${siteId}/available-models`),
-  probeSiteNow: (siteId: number, options?: { scope?: 'single' | 'all'; modelName?: string; latencyThresholdMs?: number }) =>
+  probeSiteNow: (siteId: number, options?: { scope?: 'single' | 'all'; modelName?: string; latencyThresholdMs?: number; force?: boolean }) =>
     request(`/api/sites/${siteId}/probe-now`, {
       method: 'POST',
       body: JSON.stringify(options || {}),
-      timeoutMs: options?.scope === 'all' ? 120_000 : 30_000,
+      timeoutMs: options?.scope === 'all' || options?.modelName ? 120_000 : 30_000,
     }),
 
   // Accounts

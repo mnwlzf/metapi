@@ -197,6 +197,18 @@
   min-width: 168px;
 }
 
+.probe-plan-probe-button {
+  min-height: 32px;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.probe-plan-probe-button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
 .probe-plan-override-filter select:focus-visible,
 .probe-plan-frequency:focus-visible,
 .probe-plan-tab:focus-visible,
@@ -224,7 +236,7 @@
 
 .probe-plan-table {
   width: 100%;
-  min-width: 760px;
+  min-width: 880px;
   border-collapse: collapse;
 }
 
@@ -582,6 +594,14 @@
   font-size: 12px;
 }
 
+.probe-plan-mobile-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
 .probe-plan-mobile-frequency .probe-plan-frequency {
   flex: 0 1 190px;
   min-width: 0;
@@ -712,6 +732,16 @@
 
   .probe-plan-mobile-list {
     padding: 8px;
+  }
+
+  .probe-plan-mobile-actions .probe-plan-mobile-frequency {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .probe-plan-mobile-actions .probe-plan-probe-button {
+    flex: 0 0 auto;
   }
 
   .probe-plan-mobile-list .probe-plan-key-details {
