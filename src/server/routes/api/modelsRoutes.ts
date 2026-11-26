@@ -28,6 +28,7 @@ import {getRunningTaskByDedupeKey, startBackgroundTask} from '../../services/bac
 import { requiresManagedAccountTokens } from '../../services/accountExtraConfig.js';
 import { ACCOUNT_TOKEN_VALUE_STATUS_READY } from '../../services/accountTokenService.js';
 import { canonicalizeModelName } from '../../shared/modelCanonicalization.js';
+import { getModelProbePlan, MODEL_PROBE_INTERVALS_HOURS, saveModelProbeIntervalOverride } from '../../services/modelProbePlanService.js';
 import {
   isModelDisabledForSite,
   isAccountModelFallbackDisabled,
@@ -75,6 +76,23 @@ const limitModelCheck = createRateLimitGuard({
 });
 
 export function registerModelsRoutes(app: FastifyInstance): void {
+  app.get('/api/models/probe-plan', async () => getModelProbePlan());
+
+  app.put<{ Body?: { modelName?: string; intervalHours?: number | null } }>(
+    '/api/models/probe-plan',
+    async (request, reply) => {
+      const modelName = String(request.body?.modelName || '').trim();
+      const intervalHours = request.body?.intervalHours;
+      if (!modelName) return reply.code(400).send({ success: false, message: 'modelName 不能为空' });
+      if (intervalHours !== null && (typeof intervalHours !== 'number'
+        || !MODEL_PROBE_INTERVALS_HOURS.includes(intervalHours as (typeof MODEL_PROBE_INTERVALS_HOURS)[number]))) {
+        return reply.code(400).send({ success: false, message: '无效的探测间隔' });
+      }
+      await saveModelProbeIntervalOverride(modelName, intervalHours ?? null);
+      return { success: true, ...(await getModelProbePlan()) };
+    },
+  );
+
   app.get<{ Querystring: { refresh?: string; includePricing?: string } }>(
     '/api/models/marketplace',
     { preHandler: [limitModelsMarketplaceRead] },

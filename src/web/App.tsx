@@ -29,6 +29,7 @@ const CheckinLog = lazy(() => import('./pages/CheckinLog.js'));
 const TokenRoutes = lazy(() => import('./pages/TokenRoutes.js'));
 const ProxyLogs = lazy(() => import('./pages/ProxyLogs.js'));
 const ProbeLogs = lazy(() => import('./pages/ProbeLogs.js'));
+const ProbePlan = lazy(() => import('./pages/ProbePlan.js'));
 const Settings = lazy(() => import('./pages/Settings.js'));
 const DownstreamKeys = lazy(() => import('./pages/DownstreamKeys.js'));
 const ImportExport = lazy(() => import('./pages/ImportExport.js'));
@@ -410,6 +411,7 @@ export const sidebarGroups = [
       { to: '/routes', label: '路由', icon: <svg className="sidebar-item-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg> },
       { to: '/logs', label: '使用日志', icon: <svg className="sidebar-item-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg> },
       { to: '/probe-logs', label: '测活日志', icon: <svg className="sidebar-item-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M12 21a9 9 0 1 1 0-18 9 9 0 0 1 0 18zm0-3a6 6 0 1 0 0-12 6 6 0 0 0 0 12zm0-4a2 2 0 1 1 0-4 2 2 0 0 1 0 4z" /></svg> },
+      { to: '/probe-plan', label: '探测计划', icon: <svg className="sidebar-item-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M4 6h16M4 12h16M4 18h16M8 4v4m8 2v4m-5 2v4" /></svg> },
       { to: '/events', label: '程序日志', icon: <svg className="sidebar-item-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l4.414 4.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg> },
 
     ],
@@ -908,6 +910,7 @@ function AppShell() {
                 <Route path="/routes" element={<TokenRoutes />} />
                 <Route path="/logs" element={<ProxyLogs />} />
                 <Route path="/probe-logs" element={<ProbeLogs />} />
+                <Route path="/probe-plan" element={<ProbePlan />} />
 
                 <Route path="/settings" element={<Settings />} />
                 <Route path="/downstream-keys" element={<DownstreamKeys />} />

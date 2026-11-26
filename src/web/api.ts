@@ -990,6 +990,22 @@ export const api = {
       limit: number;
       offset: number;
     }>,
+  getModelProbePlan: () => request('/api/models/probe-plan') as Promise<{
+    intervals: number[];
+    models: Array<{
+      modelName: string;
+      type: 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
+      recentCalls: number;
+      intervalHours: number;
+      automaticIntervalHours: number;
+      overridden: boolean;
+    }>;
+  }>,
+  setModelProbeInterval: (modelName: string, intervalHours: number | null) =>
+    request('/api/models/probe-plan', {
+      method: 'PUT',
+      body: JSON.stringify({ modelName, intervalHours }),
+    }),
   /** Probe runs (batches): one row per `run_id` with counts and spend. */
   getProbeLogRuns: (params?: string) =>
     request(`/api/probe-logs/runs${params ? `?${params}` : ''}`) as Promise<{

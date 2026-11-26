@@ -25,6 +25,7 @@ import {
 import { probeRuntimeModel, type RuntimeModelProbeStatus } from './runtimeModelProbe.js';
 import { isGroupScopedModelRejection } from './probeFailureClassification.js';
 import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
+import { getDefaultProbeIntervalHours, getModelProbeIntervalOverrides } from './modelProbePlanService.js';
 import { canonicalRouteAlias, collectGroupNameOwners, resolveExposedRouteName } from '../shared/routeGroupName.js';
 import { isCodexGatedPlatform } from '../shared/codexGatedPlatforms.js';
 import {
@@ -358,12 +359,6 @@ export type ProbeSiteModelsOptions = {
   maxCells?: number;
 };
 
-const PROBE_CADENCE_MS = {
-  high: 60 * 60_000,
-  medium: 6 * 60 * 60_000,
-  low: 24 * 60 * 60_000,
-  veryLow: 72 * 60 * 60_000,
-} as const;
 const PROBE_USAGE_WINDOW_MS = 7 * 24 * 60 * 60_000;
 // The scheduler polls every five minutes, but spends at most one billable probe
 // per tick (12/hour globally). This is a hard cost ceiling even when a large
@@ -375,13 +370,6 @@ const scheduledCellCursorBySite = new Map<number, string>();
 
 function getProbeCellKey(cell: ProbeCell): string {
   return `${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`;
-}
-
-function resolveProbeCadence(modelName: string, callsInWindow: number): number {
-  if (/image|imagen|dall[-_]?e|flux|stable[-_]?diffusion/i.test(modelName)) return PROBE_CADENCE_MS.veryLow;
-  if (callsInWindow >= 50) return PROBE_CADENCE_MS.high;
-  if (callsInWindow >= 5) return PROBE_CADENCE_MS.medium;
-  return PROBE_CADENCE_MS.low;
 }
 
 /**
@@ -838,12 +826,15 @@ export async function probeSiteModels(
   const usage = options?.scheduled
     ? await loadRecentProxyUsage(Array.from(new Set(built.cells.map((cell) => cell.account.id))))
     : new Map<string, number>();
+  const cadenceOverrides = options?.scheduled ? await getModelProbeIntervalOverrides() : {};
   const dueBySchedule = (cell: ProbeCell): boolean => {
     if (!options?.scheduled) return true;
     const key = `${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`;
     const last = recent.get(key) ?? 0;
     const count = usage.get(key) ?? 0;
-    return !last || nowMs - last >= resolveProbeCadence(cell.modelName, count);
+    const intervalHours = cadenceOverrides[cell.modelName.trim().toLowerCase()]
+      ?? getDefaultProbeIntervalHours(cell.modelName, count);
+    return !last || nowMs - last >= intervalHours * 60 * 60_000;
   };
   const skippedByCooldown = built.cells.filter((cell) => withinCooldown(cell) || !dueBySchedule(cell)).length;
   const cellLimit = options?.maxCells && options.maxCells > 0

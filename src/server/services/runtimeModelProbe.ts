@@ -21,6 +21,7 @@ import { db } from '../db/index.js';
 import { probeLogs } from '../db/schema.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { isModelDisabledForSite, loadSiteDisabledModelsIndex, STICKY_DISABLE_SOURCES } from './siteDisabledModels.js';
+import { classifyProbeModel } from './modelProbePlanService.js';
 
 export type RuntimeModelProbeStatus = 'supported' | 'unsupported' | 'inconclusive' | 'skipped';
 
@@ -61,14 +62,14 @@ const NON_CONVERSATION_MODEL_PATTERNS = [
   /(^|[-_/])(?:bge-(?!rerank)|gte-|e5-|voyage-)/i,
   /(^|[-_/])rerank($|[-_/])/i,
   /(^|[-_/])moderation($|[-_/])/i,
+  /(^|[-_/])(?:audio|speech|voice)($|[-_/])/i,
   /(^|[-_/])whisper($|[-_/])/i,
   /(^|[-_/])tts($|[-_/])/i,
   /(^|[-_/])transcribe|transcription/i,
   /(^|[-_/])dall-e($|[-_/])/i,
   /(^|[-_/])image(s)?($|[-_/])/i,
   /(^|[-_/])imagen($|[-_/])/i,
-  /(^|[-_/])veo($|[-_/])/i,
-  /(^|[-_/])cogvideo($|[-_/])/i,
+  /(^|[-_/])(?:veo|sora|cogvideo|video)($|[-_/])/i,
 ];
 
 const DEFINITE_UNSUPPORTED_PATTERNS = [
@@ -104,10 +105,10 @@ function isLikelyConversationModel(modelName: string): boolean {
 type SpecializedProbeKind = 'image' | 'embedding' | 'rerank';
 
 function resolveSpecializedProbeKind(modelName: string): SpecializedProbeKind | null {
-  const normalized = String(modelName || '').trim();
-  if (/(^|[-_/])image(s)?($|[-_/])|dall[-_]?e|imagen|stable[-_]?diffusion|sdxl|flux|recraft|ideogram|playground/i.test(normalized)) return 'image';
-  if (/(^|[-_/])rerank(er)?($|[-_/])/i.test(normalized)) return 'rerank';
-  if (/(^|[-_/])embedding(s)?($|[-_/])|(^|[-_/])embed($|[-_/])|(^|[-_/])(?:bge-(?!rerank)|gte-|e5-|voyage-)/i.test(normalized)) return 'embedding';
+  const type = classifyProbeModel(modelName);
+  if (type === 'image') return 'image';
+  if (type === 'rerank') return 'rerank';
+  if (type === 'embedding') return 'embedding';
   return null;
 }
 
