@@ -1278,7 +1278,7 @@ export default function TokenRoutes() {
     const result = await requestConfirmation({
       title: tr('确认屏蔽模型'),
       description: (
-        <>将模型「<strong>{modelName}</strong>」加入账号「<strong>{accountLabel}</strong>」（{siteName}）的 {channel.tokenId ? `key #${channel.tokenId}` : '账号直连 key'} 禁用列表。<br />该 key 不再探活或路由此模型，其他 key 不受影响。</>
+        <>{tr('将模型「')}<strong>{modelName}</strong>{tr('」加入账号「')}<strong>{accountLabel}</strong>（{siteName}）{tr('的 Key 禁用列表：')}{channel.tokenId ? `Key #${channel.tokenId}` : tr('账号直连 Key')}。<br />{tr('该 Key 不再探活或路由此模型，其他 Key 不受影响。')}</>
       ),
       confirmText: tr('确认屏蔽'),
       tone: 'warning',

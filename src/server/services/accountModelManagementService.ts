@@ -34,17 +34,20 @@ function scopeWhere(siteId: number, accountId: number, tokenId: number) {
 
 export async function getAccountModelList(accountId: number, tokenId = 0) {
   const { accounts: account, sites: site, tokens } = await resolveScope(accountId, tokenId);
-  const modelRows: Array<{ modelName: string; available: boolean; latencyMs: number | null; isManual?: boolean }> = tokenId > 0
+  const modelRows: Array<{ modelName: string; available: boolean; connectivity: boolean | null; latencyMs: number | null; isManual?: boolean }> = tokenId > 0
     ? await db.select({ modelName: schema.tokenModelAvailability.modelName,
-      available: schema.tokenModelAvailability.available, latencyMs: schema.tokenModelAvailability.latencyMs })
+      available: schema.tokenModelAvailability.available, connectivity: schema.tokenModelAvailability.connectivity,
+      latencyMs: schema.tokenModelAvailability.latencyMs })
       .from(schema.tokenModelAvailability).where(eq(schema.tokenModelAvailability.tokenId, tokenId)).all()
     : await db.select({ modelName: schema.modelAvailability.modelName,
-      available: schema.modelAvailability.available, latencyMs: schema.modelAvailability.latencyMs,
+      available: schema.modelAvailability.available, connectivity: schema.modelAvailability.connectivity,
+      latencyMs: schema.modelAvailability.latencyMs,
       isManual: schema.modelAvailability.isManual })
       .from(schema.modelAvailability).where(eq(schema.modelAvailability.accountId, accountId)).all();
   if (tokenId === 0 && tokens.length > 0) {
     const tokenRows = await db.select({ modelName: schema.tokenModelAvailability.modelName,
-      available: schema.tokenModelAvailability.available, latencyMs: schema.tokenModelAvailability.latencyMs })
+      available: schema.tokenModelAvailability.available, connectivity: schema.tokenModelAvailability.connectivity,
+      latencyMs: schema.tokenModelAvailability.latencyMs })
       .from(schema.tokenModelAvailability).innerJoin(schema.accountTokens,
         eq(schema.tokenModelAvailability.tokenId, schema.accountTokens.id))
       .where(eq(schema.accountTokens.accountId, accountId)).all();
@@ -53,30 +56,35 @@ export async function getAccountModelList(accountId: number, tokenId = 0) {
   const disabledRows = await db.select().from(schema.siteDisabledModels)
     .where(and(eq(schema.siteDisabledModels.siteId, site.id), eq(schema.siteDisabledModels.accountId, accountId),
       inArray(schema.siteDisabledModels.tokenId, tokenId > 0 ? [0, tokenId] : [0]))).all();
-  const rows = new Map<string, { name: string; latencyMs: number | null; isManual: boolean }>();
+  type ProbeStatus = 'available' | 'unavailable' | 'unknown';
+  const rows = new Map<string, { name: string; latencyMs: number | null; isManual: boolean; probeStatus: ProbeStatus }>();
   for (const row of modelRows) {
     const existing = rows.get(row.modelName);
-    if (!existing || (row.available && existing.latencyMs == null)) {
-      rows.set(row.modelName, { name: row.modelName, latencyMs: row.latencyMs,
-        isManual: !!row.isManual || !!existing?.isManual });
-    }
+    const probeStatus = row.connectivity === true ? 'available' : row.connectivity === false ? 'unavailable' : 'unknown';
+    rows.set(row.modelName, {
+      name: row.modelName,
+      latencyMs: existing?.latencyMs ?? row.latencyMs,
+      isManual: !!row.isManual || !!existing?.isManual,
+      probeStatus: existing?.probeStatus === 'available' || probeStatus === 'available' ? 'available'
+        : existing?.probeStatus === 'unavailable' || probeStatus === 'unavailable' ? 'unavailable' : 'unknown',
+    });
   }
   for (const row of disabledRows) {
-    if (!rows.has(row.modelName)) rows.set(row.modelName, { name: row.modelName, latencyMs: null, isManual: false });
+    if (!rows.has(row.modelName)) rows.set(row.modelName, { name: row.modelName, latencyMs: null, isManual: false, probeStatus: 'unknown' });
   }
-  const models = [...rows.values()].filter((row) => (
-    modelRows.some((model) => model.modelName === row.name && model.available)
-    || disabledRows.some((disabled) => disabled.modelName === row.name)
-  )).map((row) => {
+  // Management includes unavailable models so operators can promote an
+  // automatic failure into a manual ban, or release a ban before recovery.
+  const models = [...rows.values()].map((row) => {
     const matches = disabledRows.filter((disabled) => (
       matchesDisabledModelName(disabled.modelName, row.name)
     ));
     const sticky = matches.find((disabled) => disabled.source === 'manual' || disabled.source === 'policy');
     return { ...row, disabled: matches.length > 0, manualDisabled: !!sticky,
+      probeStatus: matches.some((disabled) => disabled.source === 'probe' || disabled.source == null) ? 'unavailable' as const : row.probeStatus,
       disabledSource: sticky?.source ?? (matches.length ? 'probe' : null),
       inherited: tokenId > 0 && matches.some((disabled) => disabled.tokenId === 0 && (disabled.source === 'manual' || disabled.source === 'policy')) };
   }).sort((a, b) => a.name.localeCompare(b.name));
-  return { siteId: site.id, siteName: site.name, tokenId, tokens, models,
+  return { siteId: site.id, siteName: site.name, tokenId, tokens, models, keyRequired: requiresManagedAccountTokens(account),
     totalCount: models.length, disabledCount: models.filter((row) => row.disabled).length,
     newModelPolicy: getNewModelPolicyFromExtraConfig(account.extraConfig) };
 }

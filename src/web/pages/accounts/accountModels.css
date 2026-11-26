@@ -1,0 +1,46 @@
+.account-models-content { display: flex; flex-direction: column; gap: 16px; }
+.account-models-scope { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 16px; background: var(--color-bg-inset); border: 1px solid var(--color-border); border-radius: 12px; }
+.account-models-scope-field { display: flex; flex-direction: column; gap: 6px; min-width: 180px; max-width: 100%; }
+.account-models-scope-field label { font-size: 12px; color: var(--color-text-muted); }
+.account-models-scope-field select { max-width: 100%; }
+.account-models-current-key { font-weight: 600; padding: 8px 0; }
+.account-models-scope-info { display: flex; flex: 1; flex-direction: column; gap: 6px; min-width: 220px; font-size: 13px; }
+.account-models-scope-info span, .account-models-hint { color: var(--color-text-muted); font-size: 12px; line-height: 1.6; }
+.account-models-explanation { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.account-models-explanation > div { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 3px solid var(--color-border); font-size: 13px; }
+.account-models-explanation span { color: var(--color-text-muted); line-height: 1.6; }
+.account-models-toolbar { display: flex; flex-direction: column; gap: 10px; }
+.account-models-filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-models-list { max-height: min(45vh, 460px); overflow: auto; border: 1px solid var(--color-border); border-radius: 10px; }
+.account-models-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.account-models-table th, .account-models-table td { padding: 12px 8px; text-align: left; vertical-align: middle; border-bottom: 1px solid var(--color-border); }
+.account-models-table th { position: sticky; top: 0; z-index: 1; background: var(--color-bg-card); font-size: 12px; color: var(--color-text-muted); }
+.account-models-table th:first-child { width: 38px; }
+.account-models-table th:nth-child(2) { width: 28%; }
+.account-models-table th:nth-child(3) { width: 16%; }
+.account-models-table th:nth-child(4) { width: 26%; }
+.account-models-table tbody tr:last-child td { border-bottom: 0; }
+.account-models-name, .account-models-policy { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; overflow-wrap: anywhere; font-size: 13px; }
+.account-models-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.account-models-row-actions .btn { white-space: normal; }
+.account-models-save-summary { flex: 1; font-size: 12px; line-height: 1.6; color: var(--color-text-muted); }
+.account-models-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px; border: 1px solid var(--color-warning); border-radius: 8px; font-size: 13px; }
+.account-models-notice > span { flex: 1; }
+.account-models-empty { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 36px 12px; color: var(--color-text-muted); }
+.account-models-advanced { border-top: 1px solid var(--color-border); padding-top: 12px; font-size: 13px; }
+.account-models-advanced summary { cursor: pointer; color: var(--color-text-muted); }
+.account-models-advanced-fields { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; padding-top: 14px; }
+.account-models-add { display: flex; gap: 8px; }
+.account-models-add input { min-width: 0; flex: 1; }
+.account-models-select-all, .account-models-mobile-name { display: flex; align-items: center; gap: 10px; }
+.account-models-select-all { padding: 12px; font-size: 12px; }
+.account-models-modal .mobile-batch-bar { position: static; margin: 0; }
+@media (max-width: 768px) {
+  .account-models-explanation { grid-template-columns: 1fr; }
+  .account-models-scope-field, .account-models-scope-info { min-width: 0; width: 100%; }
+  .account-models-scope-field select { width: 100%; }
+  .account-models-list { border: 0; }
+  .account-models-modal .modal-footer { flex-wrap: wrap; }
+  .account-models-save-summary { flex-basis: 100%; }
+  .account-models-advanced-fields { grid-template-columns: 1fr; }
+}

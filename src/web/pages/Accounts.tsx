@@ -32,6 +32,7 @@ import DeleteConfirmModal from '../components/DeleteConfirmModal.js';
 import SiteBadgeLink from '../components/SiteBadgeLink.js';
 import { StatusToggle } from '../components/StatusToggle.js';
 import AccountModelsModal from './accounts/AccountModelsModal.js';
+import { isSavedManualDisabled, type AccountModelRow } from './accounts/modelManagementState.js';
 import EditAccountModal from './accounts/EditAccountModal.js';
 import {
   buildAddAccountPrereqHint,
@@ -190,18 +191,12 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
     open: boolean;
     account: any | null;
     tokenId: number;
+    keyRequired: boolean;
     tokens: Array<{ id: number; name: string; tokenGroup?: string | null }>;
-    models: Array<{
-      name: string;
-      latencyMs: number | null;
-      disabled: boolean;
-      manualDisabled?: boolean;
-      disabledSource?: string | null;
-      inherited?: boolean;
-      isManual?: boolean;
-    }>;
+    models: AccountModelRow[];
     pendingDisabled: Set<string>;
     newModelPolicy: 'auto' | 'disable';
+    initialNewModelPolicy: 'auto' | 'disable';
     loading: boolean;
     saving: boolean;
     siteName: string;
@@ -212,10 +207,12 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
     open: false,
     account: null,
     tokenId: 0,
+    keyRequired: false,
     tokens: [],
     models: [],
     pendingDisabled: new Set(),
     newModelPolicy: 'auto',
+    initialNewModelPolicy: 'auto',
     loading: false,
     saving: false,
     siteName: '',
@@ -668,16 +665,18 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
   const applyLoadedModelModal = (account: any, result: any) => {
     const models = Array.isArray(result?.models) ? result.models : [];
     const disabledSet = new Set<string>(
-      models.filter((m: any) => m.manualDisabled ?? m.disabled).map((m: any) => m.name as string),
+      models.filter(isSavedManualDisabled).map((m: AccountModelRow) => m.name),
     );
     setModelModal((s) => ({
       ...s,
       loading: false,
       models,
       tokenId: result?.tokenId ?? 0,
+      keyRequired: result?.keyRequired ?? (result?.tokens?.length > 0),
       tokens: result?.tokens ?? [],
       pendingDisabled: disabledSet,
       newModelPolicy: result?.newModelPolicy === 'disable' ? 'disable' : 'auto',
+      initialNewModelPolicy: result?.newModelPolicy === 'disable' ? 'disable' : 'auto',
       siteName: result?.siteName || account.site?.name || s.siteName,
     }));
   };
@@ -702,6 +701,9 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
       ...(options.resetBeforeLoad
         ? {
             models: [],
+            tokens: [],
+            tokenId: 0,
+            keyRequired: false,
             pendingDisabled: new Set<string>(),
             siteName: '',
             manualModelsInput: '',
@@ -713,8 +715,14 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
         await api.checkModels(account.id);
       }
       const tokenId = options.tokenId ?? (options.resetBeforeLoad ? 0 : modelModal.tokenId);
-      const result = await api.getAccountModels(account.id, tokenId);
+      let result = await api.getAccountModels(account.id, tokenId);
       if (modelModalRequestSeqRef.current !== requestId) return;
+      // Managed accounts must always edit a concrete upstream Key. Scope 0 is
+      // only used to read Key metadata before selecting the first Key.
+      if (tokenId === 0 && result?.tokens?.length > 0) {
+        result = await api.getAccountModels(account.id, result.tokens[0].id);
+        if (modelModalRequestSeqRef.current !== requestId) return;
+      }
       applyLoadedModelModal(account, result);
       if (options.successMessage) {
         toast.success(options.successMessage);
@@ -761,7 +769,7 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
   };
 
   const saveModelDisabled = async () => {
-    if (!modelModal.account) return;
+    if (!modelModal.account || (modelModal.keyRequired && modelModal.tokenId <= 0)) return;
     const accountId = modelModal.account.id;
     setModelModal((s) => ({ ...s, saving: true }));
     try {

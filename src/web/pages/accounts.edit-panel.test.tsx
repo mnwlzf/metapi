@@ -177,6 +177,32 @@ describe('Accounts edit panel', () => {
     }
   });
 
+  it('defaults to a concrete Key and saves a failed model ban for the newly selected Key only', async () => {
+    const tokens = [{ id: 11, name: 'A' }, { id: 12, name: 'B' }];
+    apiMock.getAccountModels.mockImplementation(async (_id: number, tokenId: number) => ({
+      tokenId, tokens, keyRequired: true, siteName: 'Site A',
+      models: [{ name: 'failed', latencyMs: null, disabled: true, manualDisabled: false, disabledSource: 'probe', probeStatus: 'unavailable' }],
+    }));
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => { root = create(<MemoryRouter><Accounts /></MemoryRouter>); });
+      await flushMicrotasks();
+      const modelButton = root.root.find((node) => node.type === 'button' && collectText(node).trim() === '模型');
+      await act(async () => { await modelButton.props.onClick(); });
+      expect(apiMock.getAccountModels.mock.calls).toEqual([[1, 0], [1, 11]]);
+      const selector = root.root.findByProps({ id: 'account-model-key' });
+      expect(selector.props.value).toBe(11);
+      expect(selector.findAllByType('option').map((option) => option.props.value)).toEqual([11, 12]);
+      await act(async () => { await selector.props.onChange({ target: { value: '12' } }); });
+      await flushMicrotasks();
+      expect(root.root.findByProps({ id: 'account-model-key' }).props.value).toBe(12);
+      await act(async () => { root.root.findByProps({ 'aria-label': '手动禁用 failed' }).props.onClick(); });
+      const save = root.root.find((node) => node.type === 'button' && collectText(node) === '保存更改');
+      await act(async () => { await save.props.onClick(); });
+      expect(apiMock.updateAccountDisabledModels).toHaveBeenCalledWith(1, ['failed'], undefined, 12);
+    } finally { root?.unmount(); }
+  });
+
   it('ignores stale model modal loads after switching accounts', async () => {
     const firstLoad = deferred<any>();
     const secondLoad = deferred<any>();
@@ -298,10 +324,13 @@ describe('Accounts edit panel', () => {
       });
       await flushMicrotasks();
 
+      await act(async () => {
+        root.root.findByProps({ 'aria-label': '手动禁用 gpt-4' }).props.onClick();
+      });
       const saveButtons = root.root.findAll((node) => (
         node.type === 'button'
         && typeof node.props.onClick === 'function'
-        && collectText(node).trim() === '保存'
+        && collectText(node).trim() === '保存更改'
       ));
 
       await act(async () => {
@@ -309,7 +338,7 @@ describe('Accounts edit panel', () => {
       });
       await flushMicrotasks();
 
-      expect(apiMock.updateAccountDisabledModels).toHaveBeenCalledWith(1, [], 'auto', 0);
+      expect(apiMock.updateAccountDisabledModels).toHaveBeenCalledWith(1, ['gpt-4'], 'auto', 0);
       expect(apiMock.rebuildRoutes).not.toHaveBeenCalled();
       expect(toastMock.error).toHaveBeenCalledWith('模型禁用设置已保存，但路由重建失败，请手动刷新路由');
       expect(toastMock.success).not.toHaveBeenCalledWith('模型禁用设置已保存，路由已重建');

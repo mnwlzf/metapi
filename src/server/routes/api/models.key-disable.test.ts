@@ -125,6 +125,32 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     expect((await db.select().from(schema.siteDisabledModels).where(eq(schema.siteDisabledModels.tokenId, b.id)).get())?.source).toBe('probe');
   });
 
+  it('keeps unavailable records editable before and after promoting a probe ban to manual', async () => {
+    const { site, account, a, b } = await seed();
+    await db.update(schema.tokenModelAvailability).set({ available: false, connectivity: false })
+      .where(eq(schema.tokenModelAvailability.tokenId, a.id)).run();
+    await db.insert(schema.tokenModelAvailability).values({ tokenId: a.id, modelName: 'unlisted-failure', available: false, connectivity: false }).run();
+    await db.insert(schema.siteDisabledModels).values({ siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o', source: 'probe' }).run();
+    const url = `/api/accounts/${account.id}/models?tokenId=${a.id}`;
+    const before = await get(url);
+    expect(before.keyRequired).toBe(true);
+    expect(before.models).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'gpt-4o', probeStatus: 'unavailable', manualDisabled: false }),
+      expect.objectContaining({ name: 'unlisted-failure', probeStatus: 'unavailable', disabled: false }),
+    ]));
+    const save = await app.inject({ method: 'PUT', url: `/api/accounts/${account.id}/models/disabled`,
+      payload: { tokenId: a.id, models: ['gpt-4o'] } });
+    expect(save.statusCode).toBe(200);
+    expect((await get(url)).models.find((model: { name: string }) => model.name === 'gpt-4o'))
+      .toMatchObject({ manualDisabled: true, disabledSource: 'manual', probeStatus: 'unavailable' });
+    expect((await get(`/api/accounts/${account.id}/models?tokenId=${b.id}`)).models[0])
+      .toMatchObject({ manualDisabled: false, disabledSource: null, probeStatus: 'unknown' });
+    await ban(account.id, a.id, false);
+    expect((await get(url)).models.find((model: { name: string }) => model.name === 'gpt-4o'))
+      .toMatchObject({ manualDisabled: false, disabledSource: null, probeStatus: 'unavailable' });
+    expect((await db.select().from(schema.routeChannels).all()).map((row) => row.tokenId)).toEqual([b.id]);
+  });
+
   it('preserves configured groups and source identities while removing their banned channels', async () => {
     const { account, a, b } = await seed();
     const source = await db.select().from(schema.tokenRoutes).get();

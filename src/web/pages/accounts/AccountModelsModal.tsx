@@ -1,24 +1,21 @@
 import React from 'react';
 import CenteredModal from '../../components/CenteredModal.js';
-import { StatusPill } from '../../components/StatusText.js';
+import ResponsiveBatchActionBar from '../../components/ResponsiveBatchActionBar.js';
+import { useIsMobile } from '../../components/useIsMobile.js';
 import { fuzzyMatch } from '../helpers/fuzzySearch.js';
 import { tr } from '../../i18n.js';
-
-type AccountModelRow = {
-  name: string;
-  latencyMs: number | null;
-  disabled: boolean;
-  manualDisabled?: boolean;
-  disabledSource?: string | null;
-  inherited?: boolean;
-  isManual?: boolean;
-};
+import AccountModelList from './AccountModelList.js';
+import AccountModelAdvancedSettings from './AccountModelAdvancedSettings.js';
+import { applyManualAction, getManualChanges, getModelProbeStatus, isSavedManualDisabled, type AccountModelRow } from './modelManagementState.js';
+import './accountModels.css';
 
 type AccountModelModalState = {
   open: boolean;
   newModelPolicy?: 'auto' | 'disable';
+  initialNewModelPolicy?: 'auto' | 'disable';
   account: any | null;
   tokenId?: number;
+  keyRequired?: boolean;
   tokens?: Array<{ id: number; name: string; tokenGroup?: string | null }>;
   models: AccountModelRow[];
   pendingDisabled: Set<string>;
@@ -45,318 +42,128 @@ type AccountModelsModalProps = {
   removingManualModelName: string | null;
 };
 
-export default function AccountModelsModal({
-  modelModal,
-  inputStyle,
-  onClose,
-  onSave,
-  onTokenChange,
-  onRefresh,
-  onToggleModelDisabled,
-  onNewModelPolicyChange,
-  onSetPendingDisabled,
-  onManualInputChange,
-  onAddManualModels,
-  onRemoveManualModel,
-  removingManualModelName,
-}: AccountModelsModalProps) {
-  const [modelSearch, setModelSearch] = React.useState('');
-  const searchQuery = modelSearch.trim();
-  const enabledCount = modelModal.models.filter((model) => !modelModal.pendingDisabled.has(model.name)
-    && model.disabledSource !== 'probe' && !model.inherited).length;
-  const filteredModels = searchQuery
-    ? modelModal.models.filter((model) => fuzzyMatch(model.name, searchQuery))
-    : modelModal.models;
-  return (
-    <CenteredModal
-      open={modelModal.open}
-      onClose={onClose}
-      title={modelModal.siteName ? `模型管理 · ${modelModal.siteName}` : tr('模型管理')}
-      maxWidth={600}
-      footer={(
-        <>
-          <button onClick={onClose} className="btn btn-ghost">{tr('取消')}</button>
-          <button
-            onClick={onSave}
-            disabled={modelModal.saving || modelModal.loading}
-            className="btn btn-primary"
-          >
-            {modelModal.saving ? <><span className="spinner spinner-sm" />{tr('保存中...')}</> : tr('保存')}
-          </button>
-        </>
-      )}
-    >
-      {modelModal.loading ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '48px 0', gap: 10 }}>
-          <span className="spinner" />
-          <span style={{ color: 'var(--color-text-muted)', fontSize: 14 }}>{tr('加载模型列表...')}</span>
+type ModelFilter = 'all' | 'unavailable' | 'manual' | 'automatic' | 'changed';
+
+export default function AccountModelsModal(props: AccountModelsModalProps) {
+  const { modelModal: state, onClose, onSave, onTokenChange, onRefresh } = props;
+  const isMobile = useIsMobile();
+  const [search, setSearch] = React.useState('');
+  const [filter, setFilter] = React.useState<ModelFilter>('all');
+  const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [confirmClose, setConfirmClose] = React.useState(false);
+  React.useEffect(() => {
+    setSearch(''); setFilter('all'); setSelected(new Set()); setConfirmClose(false);
+  }, [state.open, state.account?.id, state.tokenId]);
+
+  const changes = getManualChanges(state.models, state.pendingDisabled);
+  const policyChanged = (state.tokenId ?? 0) === 0 && (state.newModelPolicy ?? 'auto') !== (state.initialNewModelPolicy ?? 'auto');
+  const dirty = changes.ban.length + changes.release.length > 0 || policyChanged;
+  const busy = state.saving || state.loading || state.addingManualModels || props.removingManualModelName !== null;
+  const missingKey = !!state.keyRequired && (state.tokenId ?? 0) <= 0;
+  const banned = (model: AccountModelRow) => !!model.inherited || state.pendingDisabled.has(model.name);
+  const changed = (model: AccountModelRow) => !model.inherited && banned(model) !== isSavedManualDisabled(model);
+  const filters: Array<{ id: ModelFilter; label: string; count: number }> = [
+    { id: 'all', label: tr('全部模型'), count: state.models.length },
+    { id: 'unavailable', label: tr('检测不可用'), count: state.models.filter((model) => getModelProbeStatus(model) === 'unavailable').length },
+    { id: 'manual', label: tr('手动禁用'), count: state.models.filter(banned).length },
+    { id: 'automatic', label: tr('自动检测'), count: state.models.filter((model) => !banned(model)).length },
+    { id: 'changed', label: tr('待保存'), count: state.models.filter(changed).length },
+  ];
+  const filtered = state.models.filter((model) => {
+    if (search.trim() && !fuzzyMatch(model.name, search.trim())) return false;
+    if (filter === 'unavailable') return getModelProbeStatus(model) === 'unavailable';
+    if (filter === 'manual') return banned(model);
+    if (filter === 'automatic') return !banned(model);
+    if (filter === 'changed') return changed(model);
+    return true;
+  });
+  const selectedModels = state.models.filter((model) => selected.has(model.name) && !model.inherited);
+  const requestClose = () => {
+    if (busy) return;
+    if (dirty) setConfirmClose(true);
+    else onClose();
+  };
+  const undo = () => {
+    props.onSetPendingDisabled(new Set(state.models.filter(isSavedManualDisabled).map((model) => model.name)));
+    props.onNewModelPolicyChange(state.initialNewModelPolicy ?? 'auto');
+    setConfirmClose(false);
+  };
+  const bulk = (disabled: boolean) => {
+    props.onSetPendingDisabled(applyManualAction(state.models, state.pendingDisabled, selected, disabled));
+    setSelected(new Set());
+  };
+  const health = state.account?.runtimeHealth;
+  const stale = health?.source === 'model-discovery' && ['unhealthy', 'degraded'].includes(health.state);
+  const token = state.tokens?.find((item) => item.id === state.tokenId);
+
+  return <CenteredModal open={state.open} onClose={requestClose} maxWidth={980} className="account-models-modal"
+    showCloseButton={!busy} title={state.siteName ? `${tr('模型管理')} · ${state.siteName}` : tr('模型管理')}
+    footer={<>
+      <div className="account-models-save-summary" role="status">
+        {dirty ? <>{tr('待手动禁用')} {changes.ban.length} · {tr('待解除禁用')} {changes.release.length}
+          {policyChanged ? ` · ${tr('新模型策略已修改')}` : ''}</> : tr('修改仅影响当前 Key')}
+      </div>
+      {dirty ? <button type="button" className="btn btn-ghost" disabled={busy} onClick={undo}>{tr('撤销更改')}</button> : null}
+      <button type="button" className="btn btn-ghost" disabled={busy} onClick={requestClose}>{tr('取消')}</button>
+      <button type="button" className="btn btn-primary" disabled={busy || !dirty || missingKey} onClick={onSave}>
+        {state.saving ? <><span className="spinner spinner-sm" />{tr('保存中...')}</> : tr('保存更改')}
+      </button>
+    </>}>
+    <div className="account-models-content">
+      {confirmClose ? <div className="account-models-notice" role="alert">
+        <span>{tr('还有未保存的更改，确定放弃吗？')}</span>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => setConfirmClose(false)}>{tr('继续编辑')}</button>
+        <button type="button" className="btn btn-soft-danger btn-sm" onClick={onClose}>{tr('放弃更改并关闭')}</button>
+      </div> : null}
+      <div className="account-models-scope">
+        <div className="account-models-scope-field"><label htmlFor="account-model-key">{tr('目标 Key')}</label>
+          {state.tokens?.length ? <select id="account-model-key" style={props.inputStyle} value={state.tokenId}
+            disabled={busy || dirty} onChange={(event) => onTokenChange?.(Number(event.target.value))}>
+            {state.tokens.map((item) => <option key={item.id} value={item.id}>{item.name} #{item.id}{item.tokenGroup ? ` · ${item.tokenGroup}` : ''}</option>)}
+          </select> : <div id="account-model-key" className="account-models-current-key">{missingKey ? tr('暂无可管理的 Key') : tr('当前连接的 API Key')}</div>}
         </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            作用范围
-            <select value={modelModal.tokenId ?? 0} disabled={modelModal.saving} onChange={(event) => onTokenChange?.(Number(event.target.value))} style={{ ...inputStyle, flex: 1 }}>
-              <option value={0}>整个账号（所有 key）</option>
-              {(modelModal.tokens ?? []).map((token) => <option key={token.id} value={token.id}>{token.name} #{token.id}{token.tokenGroup ? ` · ${token.tokenGroup}` : ''}</option>)}
-            </select>
-          </label>
-          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>勾选表示允许使用。手动禁用后不再探活；探活不可用的模型仍会参加恢复探活。</div>
-          {/* The rows below may be a previous result: the list row already says
-              so, but opening the modal is exactly where it would be misread. */}
-          {(() => {
-            const health = modelModal.account?.runtimeHealth;
-            const stale = health?.source === 'model-discovery'
-              && (health.state === 'unhealthy' || health.state === 'degraded');
-            if (!stale) return null;
-            return (
-              <div
-                data-tooltip={health.reason || undefined}
-                style={{
-                  fontSize: 11,
-                  color: 'var(--color-warning)',
-                  border: '1px solid color-mix(in srgb, var(--color-warning) 40%, transparent)',
-                  background: 'color-mix(in srgb, var(--color-warning) 8%, transparent)',
-                  borderRadius: 'var(--radius-sm)',
-                  padding: '6px 8px',
-                }}
-              >
-                {tr('刷新失败，显示上次结果')}
-                {health.reason ? `：${health.reason}` : ''}
-              </div>
-            );
-          })()}
-          {modelModal.tokenId === 0 ? <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              flexWrap: 'wrap',
-              padding: '6px 8px',
-              border: '1px solid var(--color-border-light)',
-              borderRadius: 'var(--radius-sm)',
-            }}
-          >
-            <span style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('上游新增模型：')}</span>
-            {(['auto', 'disable'] as const).map((policy) => (
-              <button
-                key={policy}
-                className="btn btn-ghost"
-                style={{
-                  fontSize: 12,
-                  padding: '2px 10px',
-                  border: `1px solid ${modelModal.newModelPolicy === policy ? 'var(--color-primary)' : 'var(--color-border)'}`,
-                  color: modelModal.newModelPolicy === policy ? 'var(--color-primary)' : undefined,
-                }}
-                onClick={() => onNewModelPolicyChange(policy)}
-              >
-                {policy === 'auto' ? tr('自动启用') : tr('自动禁用')}
-              </button>
-            ))}
-            <span style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>
-              {modelModal.newModelPolicy === 'disable'
-                ? tr('刷新发现新模型时自动保持禁用，直到你手动启用')
-                : tr('刷新发现的新模型立即启用（默认）')}
-            </span>
-          </div> : <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>新模型自动启用策略仅适用于整个账号。</div>}
-          {modelModal.models.length === 0 ? (
-            <div style={{ textAlign: 'center', padding: '32px 0' }}>
-              <div style={{ fontSize: 32, marginBottom: 8 }}>🤖</div>
-              <div style={{ fontSize: 14, color: 'var(--color-text-muted)', marginBottom: 8 }}>{tr('暂无可用模型')}</div>
-              <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 16 }}>{tr('请先点击账号操作栏中的「刷新」或「模型」按钮获取模型')}</div>
-              <button
-                onClick={() => void onRefresh()}
-                className="btn btn-soft-primary"
-              >{tr('立即获取模型')}</button>
-            </div>
-          ) : (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', userSelect: 'none' }}>
-                  <input
-                    type="checkbox"
-                    checked={modelModal.pendingDisabled.size === 0}
-                    ref={(el) => {
-                      if (el) {
-                        const total = modelModal.models.length;
-                        const disabled = modelModal.models.filter(
-                          (model) => modelModal.pendingDisabled.has(model.name),
-                        ).length;
-                        el.indeterminate = disabled > 0 && disabled < total;
-                      }
-                    }}
-                    onChange={() => {
-                      const allEnabled = modelModal.models.every(
-                        (model) => !modelModal.pendingDisabled.has(model.name),
-                      );
-                      onSetPendingDisabled(allEnabled
-                        ? new Set(modelModal.models.map((model) => model.name))
-                        : new Set());
-                    }}
-                    style={{ accentColor: 'var(--color-primary)', width: 15, height: 15 }}
-                  />
-                  <span style={{ fontSize: 13, color: 'var(--color-text-muted)' }}>{tr('已启用')} <strong style={{ color: 'var(--color-text-primary)' }}>{enabledCount}</strong> / {modelModal.models.length} 个模型
-                  </span>
-                </label>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  <button
-                    onClick={() => void onRefresh()}
-                    disabled={modelModal.saving}
-                    className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                  >
-                    {tr('刷新模型')}
-                  </button>
-                  <button
-                    onClick={() => {
-                      const next = new Set<string>();
-                      for (const model of modelModal.models) {
-                        if (!modelModal.pendingDisabled.has(model.name)) next.add(model.name);
-                      }
-                      onSetPendingDisabled(next);
-                    }}
-                    className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                  >{tr('反选')}</button>
-                  <button
-                    onClick={() => onSetPendingDisabled(new Set(modelModal.models.map((model) => model.name)))}
-                    className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                  >{tr('全部禁用')}</button>
-                  <button
-                    onClick={() => onSetPendingDisabled(new Set())}
-                    className="btn btn-ghost"
-                    style={{ fontSize: 12, padding: '4px 10px' }}
-                  >{tr('全部启用')}</button>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <input
-                  value={modelSearch}
-                  onChange={(e) => setModelSearch(e.target.value)}
-                  placeholder={tr('搜索模型（支持模糊匹配）')}
-                  style={{ ...inputStyle, flex: 1, minWidth: 0, padding: '8px 10px', fontSize: 12 }}
-                />
-                {searchQuery ? (
-                  <span style={{ fontSize: 12, color: 'var(--color-text-muted)', whiteSpace: 'nowrap' }}>
-                    {filteredModels.length}/{modelModal.models.length}
-                  </span>
-                ) : null}
-                <button
-                  onClick={() => setModelSearch('')}
-                  disabled={!searchQuery}
-                  className="btn btn-ghost"
-                  style={{ fontSize: 12, padding: '4px 10px', whiteSpace: 'nowrap' }}
-                >
-                  {tr('清空')}
-                </button>
-              </div>
-
-              <div style={{
-                maxHeight: 280,
-                overflowY: 'auto',
-                border: '1px solid var(--color-border-light)',
-                borderRadius: 'var(--radius-sm)',
-              }}>
-                {searchQuery && filteredModels.length === 0 ? (
-                  <div style={{ padding: '24px 14px', textAlign: 'center', fontSize: 13, color: 'var(--color-text-muted)' }}>
-                    {tr('没有匹配的模型')}
-                  </div>
-                ) : filteredModels.map((model, idx) => {
-                  const isDisabled = modelModal.pendingDisabled.has(model.name);
-                  const probeDisabled = model.disabledSource === 'probe' && !isDisabled;
-                  return (
-                    <label
-                      key={model.name}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 10,
-                        padding: '9px 14px',
-                        cursor: 'pointer',
-                        background: isDisabled || probeDisabled ? 'var(--color-bg)' : undefined,
-                        borderBottom: idx < filteredModels.length - 1 ? '1px solid var(--color-border-light)' : undefined,
-                        opacity: isDisabled || probeDisabled ? 0.55 : 1,
-                        transition: 'opacity 0.15s, background 0.15s',
-                      }}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={!isDisabled && !probeDisabled}
-                        disabled={model.inherited || probeDisabled}
-                        onChange={() => onToggleModelDisabled(model.name)}
-                        style={{ accentColor: 'var(--color-primary)', width: 15, height: 15, flexShrink: 0 }}
-                      />
-                      <span style={{ flex: 1, fontSize: 13, fontFamily: 'var(--font-mono)', wordBreak: 'break-all' }}>
-                        {model.name}
-                      </span>
-                      {model.latencyMs != null ? (
-                        <span style={{ fontSize: 11, color: 'var(--color-text-muted)', flexShrink: 0 }}>
-                          {model.latencyMs}ms
-                        </span>
-                      ) : null}
-                      {model.isManual ? (
-                        <StatusPill tone="info" style={{ fontSize: 10, flexShrink: 0, padding: '0 4px' }}>{tr('手动')}</StatusPill>
-                      ) : null}
-                      {model.isManual ? (
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            void onRemoveManualModel(model.name);
-                          }}
-                          disabled={removingManualModelName !== null}
-                          title={tr('删除该手动模型')}
-                          className="btn btn-soft-danger"
-                          style={{
-                            fontSize: 10,
-                            fontWeight: 600,
-                            padding: '0 4px',
-                            flexShrink: 0,
-                            lineHeight: '16px',
-                          }}
-                        >
-                          {removingManualModelName === model.name ? <span className="spinner spinner-sm" /> : tr('删除')}
-                        </button>
-                      ) : null}
-                      {isDisabled ? (
-                        <StatusPill tone="danger" style={{ fontSize: 10, flexShrink: 0 }}>{model.inherited ? '账号已禁用' : '手动禁用'}</StatusPill>
-                      ) : probeDisabled ? <StatusPill tone="warning" style={{ fontSize: 10, flexShrink: 0 }}>探活不可用 · 等待重探</StatusPill> : null}
-                    </label>
-                  );
-                })}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 4 }}>禁用仅影响所选范围，其他 key 仍可供应时，模型会继续显示在模型广场和密钥模型选项中。</div>
-            </>
-          )}
-
-          {modelModal.tokenId === 0 ? <div style={{ marginTop: 16, padding: '12px', background: 'var(--color-bg-inset)', border: '1px solid var(--color-border-light)', borderRadius: 'var(--radius-sm)' }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: 'var(--color-text-primary)' }}>{tr('手动添加可用模型')}</div>
-            <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginBottom: 8 }}>{tr('如果您的账号支持某些未在上方列表中显示的模型，可以在此手动添加（多个以英文逗号分隔）。')}</div>
-            <div style={{ display: 'flex', gap: 8 }}>
-              <input
-                placeholder={tr('例如: gpt-4-custom, claude-3-5-sonnet-20241022')}
-                value={modelModal.manualModelsInput}
-                onChange={(e) => onManualInputChange(e.target.value)}
-                style={{ ...inputStyle, flex: 1, fontFamily: 'var(--font-mono)' }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !modelModal.addingManualModels) {
-                    void onAddManualModels();
-                  }
-                }}
-              />
-              <button
-                disabled={!modelModal.manualModelsInput.trim() || modelModal.addingManualModels}
-                onClick={() => void onAddManualModels()}
-                className="btn btn-primary btn-sm"
-                style={{ whiteSpace: 'nowrap' }}
-              >
-                {modelModal.addingManualModels ? <span className="spinner spinner-sm" /> : tr('添加')}
-              </button>
-            </div>
-          </div> : null}
+        <div className="account-models-scope-info">
+          <strong>{state.account?.username || `#${state.account?.id ?? ''}`}{token ? ` · Key #${token.id}` : ''}</strong>
+          <span>{tr('手动禁用后停止探活和路由；其他 Key 的同名模型不受影响。')}</span>
         </div>
-      )}
-    </CenteredModal>
-  );
+        <button type="button" className="btn btn-ghost" disabled={busy || dirty} onClick={() => void onRefresh()}>{tr('刷新模型列表')}</button>
+      </div>
+      {dirty ? <div className="account-models-hint">{tr('更改尚未生效。请先保存或撤销，再切换 Key、刷新列表或管理手动添加的模型。')}</div> : null}
+      <div className="account-models-explanation">
+        <div><strong>{tr('自动检测')}</strong><span>{tr('检测不可用时暂不路由，后续继续探活，成功后自动恢复。')}</span></div>
+        <div><strong>{tr('手动禁用')}</strong><span>{tr('无论检测结果如何都不再探活，直到你解除禁用。')}</span></div>
+      </div>
+      {stale ? <div className="account-models-notice">{tr('刷新失败，显示上次结果')}{health.reason ? `：${health.reason}` : ''}</div> : null}
+      {state.loading ? <div className="account-models-empty"><span className="spinner" />{tr('加载模型列表...')}</div> : missingKey ? <div className="account-models-empty">{tr('请先同步或添加上游 Key，再管理该 Key 的模型。')}</div> : <>
+        <div className="account-models-toolbar">
+          <input type="search" value={search} placeholder={tr('搜索模型名称')} aria-label={tr('搜索模型名称')}
+            style={props.inputStyle} onChange={(event) => { setSearch(event.target.value); setSelected(new Set()); }} />
+          <div className="account-models-filters" role="group" aria-label={tr('筛选模型')}>
+            {filters.map((item) => <button type="button" key={item.id} className={`btn btn-sm ${filter === item.id ? 'btn-soft-primary' : 'btn-ghost'}`}
+              aria-pressed={filter === item.id} onClick={() => { setFilter(item.id); setSelected(new Set()); }}>{item.label} {item.count}</button>)}
+          </div>
+        </div>
+        {selectedModels.length > 0 ? <ResponsiveBatchActionBar isMobile={isMobile}
+          info={<>{tr('已选择')} {selectedModels.length}</>} desktopStyle={{ padding: 8 }}>
+          <button type="button" className="btn btn-soft-danger btn-sm" disabled={busy || selectedModels.every(banned)} onClick={() => bulk(true)}>{tr('手动禁用所选')}</button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy || selectedModels.every((model) => !banned(model))} onClick={() => bulk(false)}>{tr('解除所选禁用')}</button>
+          <button type="button" className="btn btn-ghost btn-sm" disabled={busy} onClick={() => setSelected(new Set())}>{tr('清除选择')}</button>
+        </ResponsiveBatchActionBar> : <div className="account-models-hint">{tr('复选框仅用于批量选择；也可直接使用每行的操作按钮。')}</div>}
+        {filtered.length ? <AccountModelList models={filtered} pendingDisabled={state.pendingDisabled} selected={selected}
+          busy={busy} isMobile={isMobile} hasChanges={dirty} removingManualModelName={props.removingManualModelName}
+          onSelect={(name) => setSelected((current) => {
+            const next = new Set(current); if (next.has(name)) next.delete(name); else next.add(name); return next;
+          })}
+          onSelectVisible={() => setSelected((current) => {
+            const editable = filtered.filter((model) => !model.inherited);
+            const all = editable.every((model) => current.has(model.name));
+            const next = new Set(current);
+            for (const model of editable) { if (all) next.delete(model.name); else next.add(model.name); }
+            return next;
+          })} onToggle={props.onToggleModelDisabled} onRemove={(name) => void props.onRemoveManualModel(name)} />
+          : <div className="account-models-empty">{state.models.length ? tr('没有匹配的模型') : tr('暂无模型记录，请先刷新模型列表。')}</div>}
+        <AccountModelAdvancedSettings {...props} busy={busy} hasChanges={dirty} />
+      </>}
+    </div>
+  </CenteredModal>;
 }
