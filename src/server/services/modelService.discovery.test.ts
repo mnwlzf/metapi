@@ -71,6 +71,7 @@ describe('refreshModelsForAccount credential discovery', () => {
 
     await db.delete(schema.routeChannels).run();
     await db.delete(schema.tokenRoutes).run();
+    await db.delete(schema.siteDisabledModels).run();
     await db.delete(schema.tokenModelAvailability).run();
     await db.delete(schema.modelAvailability).run();
     await db.delete(schema.accountTokens).run();
@@ -237,6 +238,38 @@ describe('refreshModelsForAccount credential discovery', () => {
 
     // Session credential must not be queried while managed keys already yielded models.
     expect(getModelsMock.mock.calls.some((call) => call[1] === 'session-token')).toBe(false);
+  });
+
+  it('cleans stale per-key probe bans omitted from a successful key discovery', async () => {
+    getApiTokenMock.mockResolvedValue(null);
+    getModelsMock.mockImplementation(async (_baseUrl: string, token: string) => {
+      if (token === 'session-token') return ['gpt-image-2'];
+      if (token === 'sk-deepseek') return ['deepseek-v4-pro'];
+      return [];
+    });
+
+    const site = await db.insert(schema.sites).values({
+      name: 'sail-deepseek', url: 'https://sail.example.com', platform: 'sub2api', status: 'active',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id, username: 'user', accessToken: 'session-token', apiToken: 'sk-deepseek', status: 'active',
+      extraConfig: JSON.stringify({ credentialMode: 'session' }),
+    }).returning().get();
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id, name: 'deepseek', token: 'sk-deepseek', tokenGroup: 'deepseek',
+      source: 'sync', enabled: true, isDefault: true, valueStatus: 'ready',
+    }).returning().get();
+    await db.insert(schema.siteDisabledModels).values([
+      { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'gpt-image-2', source: 'probe' },
+      { siteId: site.id, accountId: account.id, tokenId: token.id, modelName: 'gpt-image-2', source: 'probe' },
+    ]).run();
+
+    await refreshModelsForAccount(account.id);
+
+    const disabled = await db.select().from(schema.siteDisabledModels).all();
+    expect(disabled).toEqual([
+      expect.objectContaining({ tokenId: 0, modelName: 'gpt-image-2', source: 'probe' }),
+    ]);
   });
 
   it('falls back to session models when managed tokens return no models', async () => {

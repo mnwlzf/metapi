@@ -130,14 +130,26 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     await db.insert(schema.siteDisabledModels).values([
       { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'gpt-only-account-probe', source: 'probe' },
       { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'account-policy-model', source: 'manual' },
-      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'key-probe-model', source: 'probe' },
+      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-image-stale-probe', source: 'probe' },
+      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o', source: 'probe' },
     ]).run();
 
     const detail = await get(`/api/accounts/${account.id}/models?tokenId=${a.id}`);
     const byName = new Map(detail.models.map((model: { name: string }) => [model.name, model]));
     expect(byName.has('gpt-only-account-probe')).toBe(false);
+    expect(byName.has('gpt-image-stale-probe')).toBe(false);
     expect(byName.get('account-policy-model')).toMatchObject({ inherited: true, disabled: true });
-    expect(byName.get('key-probe-model')).toMatchObject({ inherited: false, disabled: true, disabledSource: 'probe' });
+    expect(byName.get('gpt-4o')).toMatchObject({ inherited: false, disabled: true, disabledSource: 'probe' });
+  });
+
+  it('does not probe stale per-key automatic failures outside the key model list', async () => {
+    const { site, account, a } = await seed();
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-image-stale-probe', source: 'probe',
+    }).run();
+
+    await models.probeSiteModels(site.id, { scope: 'all', force: true });
+    expect(probeMock.mock.calls.map(([input]) => input.modelName)).toEqual(['gpt-4o', 'gpt-4o']);
   });
 
   it('keeps unavailable records editable before and after promoting a probe ban to manual', async () => {

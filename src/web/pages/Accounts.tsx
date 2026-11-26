@@ -1515,6 +1515,10 @@ export default function Accounts({ siteId: filterSiteId }: AccountsProps = {}) {
         <TokensPanel
           embedded
           onEmbeddedActionsChange={setEmbeddedTokenActions}
+          onManageTokenModels={({ id: tokenId, accountId }) => {
+            const account = accounts.find((item) => Number(item.id) === Number(accountId));
+            if (account) void loadModelModalModels(account, { resetBeforeLoad: true, tokenId });
+          }}
           siteId={filterSiteId}
         />
       ) : (

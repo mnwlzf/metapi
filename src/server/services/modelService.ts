@@ -490,7 +490,11 @@ async function buildProbeCells(params: {
           eq(schema.tokenModelAvailability.tokenId, token.id),
         ))
         .all();
-      const disabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
+      const disabled = await db.select({
+        modelName: schema.siteDisabledModels.modelName,
+        tokenId: schema.siteDisabledModels.tokenId,
+        source: schema.siteDisabledModels.source,
+      })
         .from(schema.siteDisabledModels)
         .where(and(
           eq(schema.siteDisabledModels.siteId, site.id),
@@ -500,9 +504,20 @@ async function buildProbeCells(params: {
         .all();
 
       const tokenModels = new Map<string, string>();
-      for (const row of [...advertised, ...disabled]) {
+      const advertisedNames = new Set(advertised.map((row) => String(row.modelName || '').trim().toLowerCase()));
+      for (const row of advertised) {
         const name = String(row.modelName || '').trim();
         if (!name) continue;
+        const key = name.toLowerCase();
+        if (!tokenModels.has(key)) tokenModels.set(key, name);
+      }
+      for (const row of disabled) {
+        const name = String(row.modelName || '').trim();
+        if (!name || row.tokenId !== token.id) continue;
+        // Older releases could store another key's account-wide probe model here.
+        // Only keep automatic failures probeable while this key still advertises it.
+        if ((row.source === 'probe' || row.source == null) && !advertisedNames.has(name.toLowerCase())) continue;
+        if (row.source !== 'probe' && row.source != null) continue;
         const key = name.toLowerCase();
         if (!tokenModels.has(key)) tokenModels.set(key, name);
       }
@@ -1279,6 +1294,28 @@ async function doRefreshModelsForAccount(
 
     const latencyMs = Date.now() - startedAt;
     const checkedAt = new Date().toISOString();
+    const discoveredNames = new Set(models.map((name) => name.trim().toLowerCase()));
+    const previousProbeDisables = await db.select({
+      id: schema.siteDisabledModels.id,
+      modelName: schema.siteDisabledModels.modelName,
+      source: schema.siteDisabledModels.source,
+    })
+      .from(schema.siteDisabledModels)
+      .where(and(
+        eq(schema.siteDisabledModels.siteId, site.id),
+        eq(schema.siteDisabledModels.accountId, account.id),
+        eq(schema.siteDisabledModels.tokenId, token.id),
+      ))
+      .all();
+    const staleProbeDisableIds = previousProbeDisables
+      .filter((row) => (row.source === 'probe' || row.source == null)
+        && !discoveredNames.has(row.modelName.trim().toLowerCase()))
+      .map((row) => row.id);
+    if (staleProbeDisableIds.length > 0) {
+      await db.delete(schema.siteDisabledModels)
+        .where(inArray(schema.siteDisabledModels.id, staleProbeDisableIds))
+        .run();
+    }
 
     await db.insert(schema.tokenModelAvailability).values(
       models.map((modelName) => ({

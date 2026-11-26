@@ -29,6 +29,7 @@ type SyncStatus = 'success' | 'skipped' | 'failed';
 type TokensPanelProps = {
   embedded?: boolean;
   onEmbeddedActionsChange?: (actions: React.ReactNode | null) => void;
+  onManageTokenModels?: (token: { id: number; accountId: number }) => void;
   siteId?: number;
 };
 
@@ -321,7 +322,7 @@ const resolveAccountLabel = (result: AccountTokenSyncResult | null | undefined) 
   return tr('未知账号');
 };
 
-export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId: filterSiteId }: TokensPanelProps) {
+export function TokensPanel({ embedded = false, onEmbeddedActionsChange, onManageTokenModels, siteId: filterSiteId }: TokensPanelProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
@@ -1641,6 +1642,14 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                             {rowLoading[`${loadingPrefix}-copy`] ? <span className="spinner spinner-sm" /> : tr('复制')}
                           </button>
                         ) : null}
+                        {onManageTokenModels ? (
+                          <button
+                            type="button"
+                            onClick={() => onManageTokenModels({ id: token.id, accountId: token.accountId })}
+                            className="btn btn-link btn-link-info"
+                            data-testid={`token-manage-models-${token.id}`}
+                          >{tr('模型管理')}</button>
+                        ) : null}
                         <button
                           onClick={() => openEditPanel(token)}
                           className="btn btn-link btn-link-info"
@@ -1824,6 +1833,14 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
                           >
                             {rowLoading[`${loadingPrefix}-copy`] ? <span className="spinner spinner-sm" /> : tr('复制')}
                           </button>
+                        ) : null}
+                        {onManageTokenModels ? (
+                          <button
+                            type="button"
+                            onClick={() => onManageTokenModels({ id: token.id, accountId: token.accountId })}
+                            className="btn btn-link btn-link-info token-table-action-btn"
+                            data-testid={`token-manage-models-${token.id}`}
+                          >{tr('模型管理')}</button>
                         ) : null}
                         <button
                           onClick={() => openEditPanel(token)}

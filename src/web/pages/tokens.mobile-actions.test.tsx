@@ -8,6 +8,7 @@ const { apiMock } = vi.hoisted(() => ({
   apiMock: {
     getAccountTokens: vi.fn(),
     getAccounts: vi.fn(),
+    getAccountsSnapshot: vi.fn(),
     getSites: vi.fn(),
     batchUpdateAccountTokens: vi.fn(),
   },
@@ -33,6 +34,10 @@ describe('Tokens mobile multi-select removal', () => {
     vi.clearAllMocks();
     apiMock.getSites.mockResolvedValue([{ id: 1, name: 'Site A', platform: 'new-api', status: 'active' }]);
     apiMock.getAccounts.mockResolvedValue([{ id: 1, siteId: 1, username: 'alpha', status: 'active' }]);
+    apiMock.getAccountsSnapshot.mockResolvedValue({ accounts: [{
+      id: 1, siteId: 1, username: 'alpha', status: 'active', credentialMode: 'session',
+      site: { id: 1, name: 'Site A', status: 'active' },
+    }] });
     apiMock.getAccountTokens.mockResolvedValue([
       { id: 1, name: 'Token A', siteId: 1, accountId: 1, status: 'active', value: 'sk-a' },
     ]);
@@ -57,6 +62,28 @@ describe('Tokens mobile multi-select removal', () => {
       await flushMicrotasks();
 
       expect(() => root.root.find((node) => node.props['data-testid'] === 'tokens-mobile-select-all')).toThrow();
+    } finally {
+      root?.unmount();
+    }
+  });
+
+  it('opens model management directly from a token row', async () => {
+    const onManageTokenModels = vi.fn();
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(
+          <MemoryRouter initialEntries={['/accounts?segment=tokens']}>
+            <ToastProvider>
+              <TokensPanel onManageTokenModels={onManageTokenModels} />
+            </ToastProvider>
+          </MemoryRouter>,
+        );
+      });
+      await flushMicrotasks();
+
+      act(() => root.root.findByProps({ 'data-testid': 'token-manage-models-1' }).props.onClick());
+      expect(onManageTokenModels).toHaveBeenCalledWith({ id: 1, accountId: 1 });
     } finally {
       root?.unmount();
     }

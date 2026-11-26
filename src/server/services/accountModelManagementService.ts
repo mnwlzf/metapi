@@ -56,11 +56,18 @@ export async function getAccountModelList(accountId: number, tokenId = 0) {
   const disabledRows = await db.select().from(schema.siteDisabledModels)
     .where(and(eq(schema.siteDisabledModels.siteId, site.id), eq(schema.siteDisabledModels.accountId, accountId),
       inArray(schema.siteDisabledModels.tokenId, tokenId > 0 ? [0, tokenId] : [0]))).all();
+  const advertisedModelNames = new Set(modelRows.map((row) => row.modelName.trim().toLowerCase()));
   // A per-key editor may inherit explicit account-wide policy, but account-wide
   // probe failures belong to the account-level discovery context. Exposing them
   // in every key list mixes models that were never advertised for that key.
   const scopedDisabledRows = tokenId > 0
-    ? disabledRows.filter((row) => row.tokenId === tokenId || row.source === 'manual' || row.source === 'policy')
+    ? disabledRows.filter((row) => {
+      if (row.tokenId !== tokenId) return row.source === 'manual' || row.source === 'policy';
+      if (row.source === 'manual' || row.source === 'policy') return true;
+      // Older releases could persist a cross-key probe result against this key.
+      // Keep automatic failures only when this key's own discovery lists the model.
+      return advertisedModelNames.has(row.modelName.trim().toLowerCase());
+    })
     : disabledRows;
   type ProbeStatus = 'available' | 'unavailable' | 'unknown';
   const rows = new Map<string, { name: string; latencyMs: number | null; isManual: boolean; probeStatus: ProbeStatus }>();
