@@ -329,6 +329,8 @@ function ensureProbeLogsSchema() {
       id integer PRIMARY KEY AUTOINCREMENT NOT NULL,
       site_id integer NOT NULL REFERENCES sites(id) ON DELETE CASCADE,
       account_id integer NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      token_id integer REFERENCES account_tokens(id) ON DELETE SET NULL,
+      run_id text,
       model_name text NOT NULL,
       question_category text NOT NULL,
       question_text text NOT NULL,
@@ -336,10 +338,22 @@ function ensureProbeLogsSchema() {
       status text NOT NULL,
       latency_ms integer,
       tokens_used integer,
+      estimated_cost real,
       error_message text,
       created_at text DEFAULT (datetime('now'))
     );
   `);
+  // Databases created before per-token probing keep their old table; add the
+  // columns the log page now reads instead of leaving them one migration behind.
+  for (const [column, definition] of [
+    ['token_id', 'integer REFERENCES account_tokens(id) ON DELETE SET NULL'],
+    ['run_id', 'text'],
+    ['estimated_cost', 'real'],
+  ] as const) {
+    if (!tableColumnExists('probe_logs', column)) {
+      execSqliteLegacyCompat(`ALTER TABLE probe_logs ADD COLUMN ${column} ${definition};`);
+    }
+  }
   execSqliteLegacyCompat(`
     CREATE INDEX IF NOT EXISTS probe_logs_created_at_idx ON probe_logs(created_at);
   `);
@@ -354,6 +368,12 @@ function ensureProbeLogsSchema() {
   `);
   execSqliteLegacyCompat(`
     CREATE INDEX IF NOT EXISTS probe_logs_status_created_at_idx ON probe_logs(status, created_at);
+  `);
+  execSqliteLegacyCompat(`
+    CREATE INDEX IF NOT EXISTS probe_logs_token_created_at_idx ON probe_logs(token_id, created_at);
+  `);
+  execSqliteLegacyCompat(`
+    CREATE INDEX IF NOT EXISTS probe_logs_run_idx ON probe_logs(run_id);
   `);
 }
 

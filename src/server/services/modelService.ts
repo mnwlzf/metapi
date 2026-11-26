@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { applyNewModelPolicyForAccount } from './accountNewModelPolicy.js';
 import { getInsertedRowId } from '../db/insertHelpers.js';
@@ -22,6 +22,7 @@ import {
   requireSiteApiBaseUrl,
 } from './siteApiEndpointService.js';
 import { probeRuntimeModel, type RuntimeModelProbeStatus } from './runtimeModelProbe.js';
+import { isGroupScopedModelRejection } from './probeFailureClassification.js';
 import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
 import { canonicalRouteAlias, collectGroupNameOwners, resolveExposedRouteName } from '../shared/routeGroupName.js';
 import { isCodexGatedPlatform } from '../shared/codexGatedPlatforms.js';
@@ -297,221 +298,586 @@ export type ProbeSiteModelsResult = {
   success: boolean;
   error?: string;
   scope: 'single' | 'all';
+  /** Probe cells executed (account × key × model). */
   probed: number;
+  supported: number;
   unsupported: number;
   inconclusive: number;
-  /** Models whose probe-written disable row was reverted because they answered. */
+  /**
+   * Cells the upstream refused for *this group* rather than for the model. They
+   * are not a verdict: another key of the same account may serve the model, so
+   * no account-wide disable is written for them.
+   */
+  notApplicable: number;
+  /** Cells whose probe-written disable row was reverted because they answered. */
   recovered: number;
-  details: Array<{ modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null; reason?: string }>;
+  /** What this run spent upstream (USD, this instance's price model). */
+  estimatedCost: number;
+  details: Array<{
+    modelName: string;
+    status: RuntimeModelProbeStatus | 'not-applicable';
+    latencyMs: number | null;
+    reason?: string;
+    tokenId?: number | null;
+    tokenName?: string | null;
+    tokenGroup?: string | null;
+  }>;
 };
 
 export type ProbeSiteModelsProgress =
-  | { type: 'start'; scope: 'single' | 'all'; modelsCount: number; modelsToProbe: string[] }
-  | { type: 'model'; modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null; latencyExceeded?: true; reason?: string }
-  | { type: 'action'; modelName: string; action: 'disabled' | 'enabled' };
+  | { type: 'start'; scope: 'single' | 'all'; modelsCount: number; modelsToProbe: string[]; tokensCount: number; cellsCount: number }
+  | { type: 'model'; modelName: string; status: RuntimeModelProbeStatus | 'not-applicable'; latencyMs: number | null; latencyExceeded?: true; reason?: string; tokenId?: number | null; tokenName?: string | null; tokenGroup?: string | null }
+  | { type: 'action'; modelName: string; action: 'disabled' | 'enabled'; tokenId?: number | null; tokenName?: string | null; tokenGroup?: string | null };
+
+/** One unit of probing: a model served (or not) by one upstream key's group. */
+type ProbeCell = {
+  account: typeof schema.accounts.$inferSelect;
+  tokenId: number;
+  tokenName: string;
+  tokenGroup: string | null;
+  tokenValue: string;
+  modelName: string;
+};
+
+export type ProbeSiteModelsOptions = {
+  scope?: 'single' | 'all';
+  modelName?: string;
+  concurrency?: number;
+  latencyThresholdMs?: number;
+  signal?: AbortSignal;
+  /** Restrict the run to one upstream key. */
+  tokenId?: number | null;
+  /** Ignore the per-cell cooldown, e.g. right after editing a key. */
+  force?: boolean;
+  trigger?: 'manual' | 'post-refresh';
+};
+
+/**
+ * Probe cadence control.
+ *
+ * Every probe is a real, billed upstream call: repeating the same cell too often
+ * both wastes money and looks like abuse to the relay. The cooldown is per
+ * (account, key, model) and is answered from `probe_logs` — the same rows the log
+ * page shows — so no second source of truth has to be kept in sync.
+ */
+function resolveProbeCellCooldownMs(): number {
+  const raw = Number.parseInt(String(process.env.PROBE_CELL_COOLDOWN_MS ?? ''), 10);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10 * 60 * 1000;
+}
+
+/** Hard cap per run so a wide account cannot turn one click into thousands of calls. */
+function resolveProbeMaxCellsPerRun(): number {
+  const raw = Number.parseInt(String(process.env.PROBE_MAX_CELLS_PER_RUN ?? ''), 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 400;
+}
+
+function buildProbeRunId(): string {
+  return `pr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/**
+ * Serialise probes that share an upstream group.
+ *
+ * Relays publish a per-group `rpm_limit`; firing every key/model of one group at
+ * once trips it, and the resulting errors look like model failures.
+ */
+function createGroupSerializer() {
+  const chains = new Map<string, Promise<void>>();
+  return async function run<T>(groupKey: string, task: () => Promise<T>): Promise<T> {
+    const previous = chains.get(groupKey) ?? Promise.resolve();
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const next = previous.then(() => gate);
+    chains.set(groupKey, next);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      void next.then(() => {
+        if (chains.get(groupKey) === next) chains.delete(groupKey);
+      });
+    }
+  };
+}
+
+/**
+ * Build the cells for one probe run.
+ *
+ * The candidate set comes from the token-level model list, not the account-level
+ * one: which models a key can serve is decided by that key's upstream group, and
+ * `token_model_availability` is exactly that (it is also what route channels are
+ * built from). Probing the account-level union with one arbitrary key is what
+ * made a model served by group A look unavailable because group B was asked.
+ */
+async function buildProbeCells(params: {
+  site: typeof schema.sites.$inferSelect;
+  modelName?: string;
+  tokenId?: number | null;
+  scope: 'single' | 'all';
+}): Promise<{ cells: ProbeCell[]; modelsToProbe: string[]; tokensCount: number }> {
+  const { site } = params;
+  const accounts = await db.select().from(schema.accounts)
+    .where(and(eq(schema.accounts.siteId, site.id), eq(schema.accounts.status, 'active')))
+    .all();
+  // Deliberately not filtered on credentials: probing a public site (no auth on
+  // /v1/chat/completions) is supported, which is why runtimeModelProbe accepts an
+  // empty token. Filtering here made such accounts silently unprobeable.
+  const usableAccounts = accounts;
+  if (usableAccounts.length === 0) return { cells: [], modelsToProbe: [], tokensCount: 0 };
+
+  const cells: ProbeCell[] = [];
+  const modelOrder: string[] = [];
+  const seenModels = new Set<string>();
+  const wantedTokenId = params.tokenId == null ? null : Number(params.tokenId);
+  const wanted = params.scope === 'single' ? String(params.modelName ?? '').trim().toLowerCase() : '';
+  let tokensCount = 0;
+
+  for (const account of usableAccounts) {
+    // Has per-key discovery ever produced rows for this account? When it has not
+    // (brand-new account, key added after the last refresh), the account-level
+    // list is the only evidence and the default key is the only sensible probe —
+    // better than reporting "nothing to probe" forever.
+    const accountTokenIds = (await db.select({ id: schema.accountTokens.id })
+      .from(schema.accountTokens)
+      .where(eq(schema.accountTokens.accountId, account.id))
+      .all()).map((row) => row.id);
+    const accountHasNoTokenLevelRows = accountTokenIds.length === 0
+      || (await db.select({ id: schema.tokenModelAvailability.id })
+        .from(schema.tokenModelAvailability)
+        .where(inArray(schema.tokenModelAvailability.tokenId, accountTokenIds))
+        .all()).length === 0;
+    const tokens = await db.select({
+      id: schema.accountTokens.id,
+      name: schema.accountTokens.name,
+      token: schema.accountTokens.token,
+      tokenGroup: schema.accountTokens.tokenGroup,
+    })
+      .from(schema.accountTokens)
+      .where(and(
+        eq(schema.accountTokens.accountId, account.id),
+        eq(schema.accountTokens.enabled, true),
+      ))
+      .all();
+    // An account with no managed keys still has to be probeable (public sites,
+    // key-less imports): probe with the account credential and record the verdict
+    // account-wide (token_id 0), the only scope available in that case.
+    const allTokens = tokens.length > 0
+      ? tokens
+      : [{
+        id: 0,
+        name: '账号默认',
+        token: String(account.apiToken || account.accessToken || ''),
+        tokenGroup: null as string | null,
+      }];
+    const scopedTokens = wantedTokenId != null && Number.isFinite(wantedTokenId) && wantedTokenId > 0
+      ? allTokens.filter((token) => token.id === wantedTokenId)
+      : allTokens;
+
+    for (const token of scopedTokens) {
+      // Empty is legitimate: a public site answers without a credential, and the
+      // probe treats "no token" as "send no Authorization header".
+      const tokenValue = String(token.token || '').trim();
+
+      // What this key advertised, plus what is currently disabled for it — a
+      // disabled cell has to stay probeable, otherwise it can never recover.
+      const advertised = await db.select({ modelName: schema.tokenModelAvailability.modelName })
+        .from(schema.tokenModelAvailability)
+        .where(and(
+          eq(schema.tokenModelAvailability.tokenId, token.id),
+          eq(schema.tokenModelAvailability.available, true),
+        ))
+        .all();
+      const disabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
+        .from(schema.siteDisabledModels)
+        .where(and(
+          eq(schema.siteDisabledModels.siteId, site.id),
+          eq(schema.siteDisabledModels.accountId, account.id),
+          inArray(schema.siteDisabledModels.tokenId, [0, token.id]),
+        ))
+        .all();
+
+      const tokenModels = new Map<string, string>();
+      for (const row of [...advertised, ...disabled]) {
+        const name = String(row.modelName || '').trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        if (!tokenModels.has(key)) tokenModels.set(key, name);
+      }
+
+      // No per-key discovery yet (a fresh account, or a key added after the last
+      // refresh): the account-level list is the only evidence available, so probe
+      // it with the account's default key. Group-scoped rejections are still
+      // classified as "not applicable", so this cannot disable models another
+      // group serves.
+      if (tokenModels.size === 0 && accountHasNoTokenLevelRows) {
+        const accountLevel = await db.select({ modelName: schema.modelAvailability.modelName })
+          .from(schema.modelAvailability)
+          .where(and(
+            eq(schema.modelAvailability.accountId, account.id),
+            eq(schema.modelAvailability.available, true),
+          ))
+          .all();
+        const accountDisabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
+          .from(schema.siteDisabledModels)
+          .where(and(
+            eq(schema.siteDisabledModels.siteId, site.id),
+            eq(schema.siteDisabledModels.accountId, account.id),
+          ))
+          .all();
+        for (const row of [...accountLevel, ...accountDisabled]) {
+          const name = String(row.modelName || '').trim();
+          if (!name) continue;
+          const key = name.toLowerCase();
+          if (!tokenModels.has(key)) tokenModels.set(key, name);
+        }
+      }
+      if (tokenModels.size === 0) continue;
+
+      tokensCount += 1;
+      for (const [key, modelName] of tokenModels) {
+        if (wanted && key !== wanted) continue;
+        if (!seenModels.has(key)) {
+          seenModels.add(key);
+          modelOrder.push(modelName);
+        }
+        cells.push({
+          account,
+          tokenId: token.id,
+          tokenName: String(token.name || `#${token.id}`),
+          tokenGroup: token.tokenGroup ? String(token.tokenGroup) : null,
+          tokenValue,
+          modelName,
+        });
+      }
+    }
+  }
+
+  return { cells, modelsToProbe: modelOrder, tokensCount };
+}
+
+function parseProbeLogTimeMs(value: unknown): number {
+  const text = String(value || '').trim();
+  if (!text) return 0;
+  const parsed = Date.parse(text.includes('T') ? text : `${text.replace(' ', 'T')}Z`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** Last probe time per (account, key, model), read from the log itself. */
+async function loadRecentProbeTimes(accountIds: number[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (accountIds.length === 0) return result;
+  const rows = await db.select({
+    accountId: schema.probeLogs.accountId,
+    tokenId: schema.probeLogs.tokenId,
+    modelName: schema.probeLogs.modelName,
+    createdAt: schema.probeLogs.createdAt,
+  })
+    .from(schema.probeLogs)
+    .where(inArray(schema.probeLogs.accountId, accountIds))
+    .all();
+  for (const row of rows) {
+    const parsed = parseProbeLogTimeMs(row.createdAt);
+    if (!parsed) continue;
+    const key = `${row.accountId}:${row.tokenId ?? 0}:${String(row.modelName || '').trim().toLowerCase()}`;
+    if (parsed > (result.get(key) ?? 0)) result.set(key, parsed);
+  }
+  return result;
+}
+
+/** Record "this key serves this model" on the table routing actually reads. */
+async function markCellAvailable(cell: ProbeCell, latencyMs: number | null): Promise<void> {
+  await db.update(schema.tokenModelAvailability)
+    .set({
+      available: true,
+      connectivity: true,
+      ...(latencyMs != null ? { latencyMs } : {}),
+      checkedAt: new Date().toISOString(),
+    })
+    .where(and(
+      eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
+      eq(schema.tokenModelAvailability.modelName, cell.modelName),
+    ))
+    .run();
+}
+
+/** Record "this key cannot serve this model", for that key only. */
+async function markCellUnavailable(cell: ProbeCell): Promise<void> {
+  await db.update(schema.tokenModelAvailability)
+    .set({ available: false, connectivity: false, checkedAt: new Date().toISOString() })
+    .where(and(
+      eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
+      eq(schema.tokenModelAvailability.modelName, cell.modelName),
+    ))
+    .run();
+}
 
 export async function probeSiteModels(
   siteId: number,
-  options?: { scope?: 'single' | 'all'; modelName?: string; concurrency?: number; latencyThresholdMs?: number; signal?: AbortSignal },
+  options?: ProbeSiteModelsOptions,
   onProgress?: (event: ProbeSiteModelsProgress) => void,
 ): Promise<ProbeSiteModelsResult> {
-  const empty = (scope: 'single' | 'all', error: string): ProbeSiteModelsResult =>
-    ({ success: false, error, scope, probed: 0, unsupported: 0, inconclusive: 0, recovered: 0, details: [] });
+  const empty = (scope: 'single' | 'all', error: string): ProbeSiteModelsResult => ({
+    success: false,
+    error,
+    scope,
+    probed: 0,
+    supported: 0,
+    unsupported: 0,
+    inconclusive: 0,
+    notApplicable: 0,
+    recovered: 0,
+    estimatedCost: 0,
+    details: [],
+  });
 
   const site = await db.select().from(schema.sites).where(eq(schema.sites.id, siteId)).get();
   if (!site) return empty('single', '站点不存在');
 
-  const account = await db.select().from(schema.accounts)
-    .where(and(eq(schema.accounts.siteId, siteId), eq(schema.accounts.status, 'active')))
-    .get();
-  if (!account) return empty('single', '该站点没有可用的活跃账号');
-
-  const modelRows = await db.select({ modelName: schema.modelAvailability.modelName })
-    .from(schema.modelAvailability)
-    .where(and(
-      eq(schema.modelAvailability.accountId, account.id),
-      eq(schema.modelAvailability.available, true),
-    ))
-    .all();
-
-  // Models this key currently has disabled are probed too, even though their
-  // availability flag is false: they are exactly the ones an operator wants a
-  // second opinion on, and a confirmed success is what lifts the disable. Rows
-  // the operator disabled by hand stay disable-relevant but are never reverted
-  // (clearAutoDisabledModels only touches probe provenance).
-  const disabledRows = await db.select({ modelName: schema.siteDisabledModels.modelName })
-    .from(schema.siteDisabledModels)
-    .where(and(
-      eq(schema.siteDisabledModels.siteId, siteId),
-      eq(schema.siteDisabledModels.accountId, account.id),
-    ))
-    .all();
-
   const scope = options?.scope ?? (options?.modelName !== undefined
     ? 'single'
     : site.postRefreshProbeScope === 'all' ? 'all' : 'single');
-  const seenModels = new Set<string>();
-  const availableModels: string[] = [];
-  for (const raw of [
-    ...modelRows.map((r: any) => r.modelName),
-    ...disabledRows.map((r: any) => r.modelName),
-  ]) {
-    const name = String(raw || '').trim();
-    if (!name) continue;
-    const key = name.toLowerCase();
-    if (seenModels.has(key)) continue;
-    seenModels.add(key);
-    availableModels.push(name);
-  }
-  if (availableModels.length === 0) {
-    return empty(scope, '该站点暂无已发现模型，请先刷新模型列表');
+
+  if (scope === 'single' && options?.modelName !== undefined && !String(options.modelName).trim()) {
+    return empty(scope, 'modelName 必须是非空模型名称');
   }
 
-  let modelsToProbe: string[];
-  if (scope === 'all') {
-    modelsToProbe = availableModels;
-  } else {
-    const configModel = ((options?.modelName ?? site.postRefreshProbeModel) || '').trim().toLowerCase();
-    if (options?.modelName !== undefined && !configModel) {
-      return empty(scope, 'modelName 必须是非空模型名称');
+  let built = await buildProbeCells({
+    site,
+    scope,
+    modelName: options?.modelName ?? site.postRefreshProbeModel ?? undefined,
+    tokenId: options?.tokenId ?? null,
+  });
+  if (built.modelsToProbe.length === 0 && scope === 'single' && options?.modelName === undefined) {
+    // The site's configured probe model is gone from the catalog: probe the first
+    // advertised model instead of failing the whole pass. A stale setting must not
+    // silently stop probing.
+    const fallback = await buildProbeCells({ site, scope: 'all', tokenId: options?.tokenId ?? null });
+    const firstModel = fallback.modelsToProbe[0];
+    if (firstModel) {
+      built = {
+        cells: fallback.cells.filter((cell) => cell.modelName.toLowerCase() === firstModel.toLowerCase()),
+        modelsToProbe: [firstModel],
+        tokensCount: fallback.tokensCount,
+      };
     }
-    const found = configModel
-      ? availableModels.find((m: any) => m.toLowerCase() === configModel)
-      : availableModels[0];
-    if (options?.modelName?.trim() && !found) {
-      return empty(scope, `指定模型 "${options.modelName.trim()}" 不在该站点已发现的可用模型列表中，请先刷新模型列表`);
-    }
-    modelsToProbe = [found ?? availableModels[0]];
+  }
+  // "Single" means one model even when the configured name is blank: otherwise an
+  // empty setting silently turned the pass into a full sweep.
+  if (scope === 'single' && built.modelsToProbe.length > 1) {
+    const firstModel = built.modelsToProbe[0]!;
+    built = {
+      cells: built.cells.filter((cell) => cell.modelName.toLowerCase() === firstModel.toLowerCase()),
+      modelsToProbe: [firstModel],
+      tokensCount: built.tokensCount,
+    };
+  }
+  if (built.modelsToProbe.length === 0) {
+    if (options?.tokenId) return empty(scope, '该令牌暂无可探测的模型，请先刷新模型列表');
+    const requested = String(options?.modelName ?? site.postRefreshProbeModel ?? '').trim();
+    return empty(scope, requested
+      ? `指定模型 "${requested}" 不在该站点的令牌模型列表中，请先刷新模型列表`
+      : '该站点暂无已发现模型，请先刷新模型列表');
   }
 
-  onProgress?.({ type: 'start', scope, modelsCount: modelsToProbe.length, modelsToProbe });
+  const runId = buildProbeRunId();
+  const cooldownMs = resolveProbeCellCooldownMs();
+  const maxCells = resolveProbeMaxCellsPerRun();
+  const nowMs = Date.now();
+  const recent = options?.force
+    ? new Map<string, number>()
+    : await loadRecentProbeTimes(Array.from(new Set(built.cells.map((cell) => cell.account.id))));
+  const withinCooldown = (cell: ProbeCell): boolean => {
+    if (options?.force || cooldownMs <= 0) return false;
+    const last = recent.get(`${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`) ?? 0;
+    return last > 0 && nowMs - last < cooldownMs;
+  };
+  const skippedByCooldown = built.cells.filter(withinCooldown).length;
+  const cells = built.cells.filter((cell) => !withinCooldown(cell)).slice(0, maxCells);
 
-  let recoveredCount = 0;
+  onProgress?.({
+    type: 'start',
+    scope,
+    modelsCount: built.modelsToProbe.length,
+    modelsToProbe: built.modelsToProbe,
+    tokensCount: built.tokensCount,
+    cellsCount: cells.length,
+  });
 
-  // Probe models concurrently, limited by the caller-provided concurrency
+  if (cells.length === 0) {
+    return {
+      success: true,
+      scope,
+      probed: 0,
+      supported: 0,
+      unsupported: 0,
+      inconclusive: 0,
+      notApplicable: 0,
+      recovered: 0,
+      estimatedCost: 0,
+      details: [],
+      error: skippedByCooldown > 0
+        ? `全部 ${skippedByCooldown} 个探测单元都在冷却期内（${Math.round(cooldownMs / 60000)} 分钟内不重复探测），可勾选强制重探`
+        : undefined,
+    };
+  }
+
+  const threshold = options?.latencyThresholdMs ?? 0;
   const concurrency = Math.max(1, options?.concurrency ?? 10);
-  const detailsMap = new Map<string, { modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null; reason?: string }>();
+  const runInGroup = createGroupSerializer();
+
+  let supportedCount = 0;
+  let unsupportedCount = 0;
+  let inconclusiveCount = 0;
+  let notApplicableCount = 0;
+  let recoveredCount = 0;
+  let routeRebuildNeeded = false;
+  const details: ProbeSiteModelsResult['details'] = [];
 
   let cursor = 0;
   async function worker() {
-    while (cursor < modelsToProbe.length) {
+    while (cursor < cells.length) {
       if (options?.signal?.aborted) break;
-      const modelName = modelsToProbe[cursor++];
+      const cell = cells[cursor++];
+      const groupKey = `${cell.account.id}:${cell.tokenGroup ?? cell.tokenId}`;
+      let result: Awaited<ReturnType<typeof probeRuntimeModel>> | null = null;
       try {
-        const result = await probeRuntimeModel({
-          site, account, modelName, timeoutMs: resolveModelAvailabilityProbeTimeoutMs(),
+        result = await runInGroup(groupKey, () => probeRuntimeModel({
+          site,
+          account: cell.account,
+          modelName: cell.modelName,
+          timeoutMs: resolveModelAvailabilityProbeTimeoutMs(),
+          tokenValue: cell.tokenValue,
+          // token_id 0 means "account-wide" in the disable table, but probe_logs
+          // keeps a real foreign key to account_tokens: log no key instead.
+          tokenId: cell.tokenId > 0 ? cell.tokenId : null,
+          tokenGroup: cell.tokenGroup,
+          runId,
+        }));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : '探测异常';
+        console.warn(`[probe] account ${cell.account.id} token ${cell.tokenId} ${cell.modelName} failed`, error);
+        inconclusiveCount += 1;
+        details.push({ modelName: cell.modelName, status: 'inconclusive', latencyMs: null, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+        onProgress?.({ type: 'model', modelName: cell.modelName, status: 'inconclusive', latencyMs: null, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+        continue;
+      }
+
+      const latencyExceeded = (
+        result.status === 'supported'
+        && threshold > 0
+        && result.latencyMs != null
+        && result.latencyMs > threshold
+      );
+      const groupScoped = result.status !== 'supported' && isGroupScopedModelRejection(result.reason);
+      const status: ProbeSiteModelsResult['details'][number]['status'] = latencyExceeded
+        ? 'unsupported'
+        : groupScoped ? 'not-applicable' : result.status;
+      const reason = latencyExceeded
+        ? `响应延迟 ${result.latencyMs}ms 超过阈值 ${threshold}ms`
+        : result.reason;
+
+      details.push({
+        modelName: cell.modelName,
+        status,
+        latencyMs: result.latencyMs,
+        reason,
+        tokenId: cell.tokenId,
+        tokenName: cell.tokenName,
+        tokenGroup: cell.tokenGroup,
+      });
+      onProgress?.(latencyExceeded
+        ? { type: 'model', modelName: cell.modelName, status, latencyMs: result.latencyMs, latencyExceeded: true, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup }
+        : { type: 'model', modelName: cell.modelName, status, latencyMs: result.latencyMs, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+
+      if (status === 'skipped') continue;
+
+      if (status === 'supported') {
+        supportedCount += 1;
+        await markCellAvailable(cell, result.latencyMs);
+        const recovered = await clearAutoDisabledModels({
+          siteId: site.id,
+          accountId: cell.account.id,
+          tokenId: cell.tokenId,
+          modelNames: [cell.modelName],
         });
-        const threshold = options?.latencyThresholdMs ?? 0;
-        const latencyExceeded = (
-          result.status === 'supported'
-          && threshold > 0
-          && result.latencyMs != null
-          && result.latencyMs > threshold
-        );
-        const effectiveStatus: RuntimeModelProbeStatus = latencyExceeded ? 'unsupported' : result.status;
-        const effectiveReason = latencyExceeded
-          ? `响应延迟 ${result.latencyMs}ms 超过阈值 ${threshold}ms`
-          : result.reason;
-        detailsMap.set(modelName, { modelName, status: effectiveStatus, latencyMs: result.latencyMs, reason: effectiveReason });
-        onProgress?.(latencyExceeded
-          ? { type: 'model', modelName, status: effectiveStatus, latencyMs: result.latencyMs, latencyExceeded: true, reason: effectiveReason }
-          : { type: 'model', modelName, status: effectiveStatus, latencyMs: result.latencyMs, reason: effectiveReason },
-        );
-      } catch (err) {
-        const errReason = err instanceof Error ? err.message : '探测异常';
-        console.warn(`[probe-site-now] probe failed for site ${siteId} model ${modelName}`, err);
-        detailsMap.set(modelName, { modelName, status: 'inconclusive', latencyMs: null, reason: errReason });
-        onProgress?.({ type: 'model', modelName, status: 'inconclusive', latencyMs: null, reason: errReason });
+        if (recovered.length > 0) {
+          recoveredCount += recovered.length;
+          routeRebuildNeeded = true;
+          onProgress?.({ type: 'action', modelName: cell.modelName, action: 'enabled', tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+        }
+        continue;
+      }
+
+      if (status === 'not-applicable') {
+        // This group does not serve the model. Correct the advertisement for this
+        // key (routing reads it) but never write an account-wide verdict: another
+        // key of the account may serve it perfectly well.
+        notApplicableCount += 1;
+        await markCellUnavailable(cell);
+        routeRebuildNeeded = true;
+        continue;
+      }
+
+      if (status === 'unsupported') unsupportedCount += 1;
+      else inconclusiveCount += 1;
+      await markCellUnavailable(cell);
+      const inserted = await db.insert(schema.siteDisabledModels)
+        .values({
+          siteId: site.id,
+          accountId: cell.account.id,
+          tokenId: cell.tokenId,
+          modelName: cell.modelName,
+          source: 'probe',
+        })
+        .onConflictDoNothing()
+        .run();
+      if (Number((inserted as { changes?: number | bigint } | undefined)?.changes ?? 0) > 0) {
+        routeRebuildNeeded = true;
+        onProgress?.({ type: 'action', modelName: cell.modelName, action: 'disabled', tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, modelsToProbe.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(concurrency, cells.length) }, worker));
 
-  // Restore original model order for the final details list
-  const details = modelsToProbe.map((m) => detailsMap.get(m)!);
-
-  // Only a confirmed-usable answer keeps a model in the routing pool. Both a
-  // definite rejection and a probe that reached no conclusion take the model
-  // out: an unproven model must not be routed on hope, and the operator's rule
-  // is "usable means verified usable".
-  //
-  // This is affordable only because recovery is automatic: disabled models are
-  // re-probed on the next pass (see the disabled-list union above) and a
-  // successful answer deletes the disable row again, so a transient timeout
-  // costs availability until the next probe instead of forever. Models the
-  // probe cannot speak about at all ('skipped': embeddings/rerank/tts/…) are
-  // excluded — they are never tested, so disabling them would mean permanently.
-  const unsupportedModels = details.filter((d) => d.status === 'unsupported').map((d) => d.modelName);
-  const inconclusiveModels = details.filter((d) => d.status === 'inconclusive').map((d) => d.modelName);
-  const unverifiedModels = [...unsupportedModels, ...inconclusiveModels];
-  if (unverifiedModels.length > 0) {
-    const checkedAt = new Date().toISOString();
-    // Two statements for the whole batch instead of two per model: on SQLite each
-    // statement is its own commit, so a site with hundreds of dead models paid
-    // hundreds of round-trips (and fsyncs) here.
-    await db.update(schema.modelAvailability)
-      .set({ available: false, checkedAt })
-      .where(and(
-        eq(schema.modelAvailability.accountId, account.id),
-        inArray(schema.modelAvailability.modelName, unverifiedModels),
-      ))
-      .run();
-    await db.insert(schema.siteDisabledModels)
-      .values(unverifiedModels.map((modelName) => ({ siteId, accountId: account.id, modelName, source: 'probe' })))
-      .onConflictDoNothing()
-      .run();
-    for (const modelName of unverifiedModels) {
-      onProgress?.({ type: 'action', modelName, action: 'disabled' });
-    }
-    const reason = unverifiedModels.length === 1
-      ? `手动探测未通过：模型 ${unverifiedModels[0]} 未确认可用`
-      : `手动探测未通过：${unverifiedModels.length} 个模型未确认可用（${unverifiedModels.slice(0, 3).join('、')}${unverifiedModels.length > 3 ? '…' : ''}）`;
-    await setAccountRuntimeHealth(account.id, { state: 'unhealthy', reason, source: 'manual-probe', checkedAt });
+  // One rebuild for the whole run: rebuilding per cell thrashes the route tables
+  // and, on a wide account, costs more time than the probing itself.
+  if (routeRebuildNeeded && !options?.signal?.aborted) {
+    invalidateTokenRouterCache();
     rebuildTokenRoutesFromAvailability().catch((err) => {
-      console.warn('[probe-site-now] route rebuild failed', err);
+      console.warn('[probe] route rebuild failed', err);
     });
   }
 
-  // A successful probe is positive proof the upstream is reachable: refresh the
-  // connectivity mark, otherwise a stale `connectivity = false` (soft-avoided by
-  // the router) is never contradicted — probes only bumped checkedAt, which kept
-  // the negative mark "fresh" so its TTL never expired.
-  const supportedModels = details.filter((d) => d.status === 'supported').map((d) => d.modelName);
-  if (supportedModels.length > 0) {
-    await db.update(schema.modelAvailability)
-      .set({ available: true, connectivity: true, checkedAt: new Date().toISOString() })
-      .where(and(
-        eq(schema.modelAvailability.accountId, account.id),
-        inArray(schema.modelAvailability.modelName, supportedModels),
-      ))
-      .run();
-    // …and it is the same kind of evidence a disable was based on, so a model
-    // that answers again leaves the disabled list instead of staying excluded
-    // from routing forever.
-    const recoveredModels = await clearAutoDisabledModels({
-      siteId,
-      accountId: account.id,
-      modelNames: supportedModels,
+  if (unsupportedCount + inconclusiveCount > 0) {
+    const failed = unsupportedCount + inconclusiveCount;
+    const sample = details.filter((detail) => detail.status === 'unsupported' || detail.status === 'inconclusive').slice(0, 3);
+    await setAccountRuntimeHealth(cells[0]!.account.id, {
+      state: 'unhealthy',
+      reason: `探测未通过：${failed} 个单元未确认可用（${sample.map((detail) => detail.modelName).join('、')}${failed > 3 ? '…' : ''}）`,
+      source: options?.trigger === 'post-refresh' ? 'post-refresh-probe' : 'manual-probe',
+      checkedAt: new Date().toISOString(),
     });
-    recoveredCount += recoveredModels.length;
-    for (const modelName of recoveredModels) {
-      onProgress?.({ type: 'action', modelName, action: 'enabled' });
-    }
-    if (recoveredModels.length > 0) {
-      invalidateTokenRouterCache();
-      rebuildTokenRoutesFromAvailability().catch((err) => {
-        console.warn('[probe-site-now] route rebuild after auto-recovery failed', err);
-      });
-    }
   }
+
+  // Cost of the run: the per-probe rows are the ledger, so aggregating them here
+  // keeps "what did this run spend" identical to what the log page shows.
+  const runCost = await db.select({ total: sql<number>`coalesce(sum(${schema.probeLogs.estimatedCost}), 0)` })
+    .from(schema.probeLogs)
+    .where(eq(schema.probeLogs.runId, runId))
+    .get()
+    .catch(() => null);
 
   return {
     success: true,
     scope,
     probed: details.length,
-    unsupported: unsupportedModels.length,
-    inconclusive: inconclusiveModels.length,
+    supported: supportedCount,
+    unsupported: unsupportedCount,
+    inconclusive: inconclusiveCount,
+    notApplicable: notApplicableCount,
     recovered: recoveredCount,
+    estimatedCost: Math.round(Number(runCost?.total ?? 0) * 1_000_000) / 1_000_000,
     details,
   };
 }
@@ -524,112 +890,31 @@ async function runPostRefreshProbeIfEnabled(params: {
   if (!params.site.postRefreshProbeEnabled) return undefined;
   if (params.discoveredModels.length === 0) return undefined;
 
-  const scope = (params.site.postRefreshProbeScope === 'all' ? 'all' : 'single') as 'single' | 'all';
-
-  // Determine which models to probe
-  let modelsToProbe: string[];
-  if (scope === 'all') {
-    modelsToProbe = params.discoveredModels;
-  } else {
-    const configModel = (params.site.postRefreshProbeModel || '').trim().toLowerCase();
-    const found = configModel
-      ? (params.discoveredModels.find((m) => m.toLowerCase() === configModel) ?? params.discoveredModels[0])
-      : params.discoveredModels[0];
-    modelsToProbe = [found];
-  }
-
-  // runPostRefreshProbeIfEnabled: apply latency threshold from site config
-  const threshold = params.site.postRefreshProbeLatencyThresholdMs ?? 0;
-  // Probe each model sequentially
-  const details: Array<{ modelName: string; status: RuntimeModelProbeStatus; latencyMs: number | null }> = [];
-  for (const modelName of modelsToProbe) {
-    try {
-      const result = await probeRuntimeModel({
-        site: params.site,
-        account: params.account,
-        modelName,
-        timeoutMs: resolveModelAvailabilityProbeTimeoutMs(),
-      });
-      const latencyExceeded = (
-        result.status === 'supported'
-        && threshold > 0
-        && result.latencyMs != null
-        && result.latencyMs > threshold
-      );
-      const effectiveStatus: RuntimeModelProbeStatus = latencyExceeded ? 'unsupported' : result.status;
-      details.push({ modelName, status: effectiveStatus, latencyMs: result.latencyMs });
-    } catch (err) {
-      console.warn(`[post-refresh-probe] probe failed for account ${params.account.id} model ${modelName}`, err);
-      details.push({ modelName, status: 'inconclusive', latencyMs: null });
-    }
-  }
-
-  // Same policy as the manual probe: only a confirmed answer keeps a model in
-  // the pool, so a definite rejection and an unanswered probe both disable.
-  const unsupportedModels = details.filter((d) => d.status === 'unsupported').map((d) => d.modelName);
-  const inconclusiveModels = details.filter((d) => d.status === 'inconclusive').map((d) => d.modelName);
-  const unverifiedModels = [...unsupportedModels, ...inconclusiveModels];
-  if (unverifiedModels.length > 0) {
-    const checkedAt = new Date().toISOString();
-    // Batched for the same reason as the manual-probe path above.
-    await db.update(schema.modelAvailability)
-      .set({ available: false, checkedAt })
-      .where(and(
-        eq(schema.modelAvailability.accountId, params.account.id),
-        inArray(schema.modelAvailability.modelName, unverifiedModels),
-      ))
-      .run();
-    await db.insert(schema.siteDisabledModels)
-      .values(unverifiedModels.map((modelName) => ({ siteId: params.site.id, accountId: params.account.id, modelName, source: 'probe' })))
-      .onConflictDoNothing()
-      .run();
-    // Update account health
-    const reason = unverifiedModels.length === 1
-      ? `刷新后探测未通过：模型 ${unverifiedModels[0]} 未确认可用`
-      : `刷新后探测未通过：${unverifiedModels.length} 个模型未确认可用（${unverifiedModels.slice(0, 3).join('、')}${unverifiedModels.length > 3 ? '…' : ''}）`;
-    await setAccountRuntimeHealth(params.account.id, {
-      state: 'unhealthy',
-      reason,
-      source: 'post-refresh-probe',
-      checkedAt,
-    });
-    // Single route rebuild for all changes
-    rebuildTokenRoutesFromAvailability().catch((err) => {
-      console.warn('[post-refresh-probe] route rebuild failed', err);
-    });
-  }
-
-  // Same positive-proof refresh as the manual-probe path: a supported verdict
-  // clears a stale `connectivity = false` instead of letting it ride on TTL,
-  // and reverts the disables this probe wrote for models that answer again.
-  const supportedModels = details.filter((d) => d.status === 'supported').map((d) => d.modelName);
-  if (supportedModels.length > 0) {
-    await db.update(schema.modelAvailability)
-      .set({ available: true, connectivity: true, checkedAt: new Date().toISOString() })
-      .where(and(
-        eq(schema.modelAvailability.accountId, params.account.id),
-        inArray(schema.modelAvailability.modelName, supportedModels),
-      ))
-      .run();
-    const recoveredModels = await clearAutoDisabledModels({
-      siteId: params.site.id,
-      accountId: params.account.id,
-      modelNames: supportedModels,
-    });
-    if (recoveredModels.length > 0) {
-      invalidateTokenRouterCache();
-      rebuildTokenRoutesFromAvailability().catch((err) => {
-        console.warn('[post-refresh-probe] route rebuild after auto-recovery failed', err);
-      });
-    }
-  }
+  // One probe implementation for both triggers: the per-key cell builder already
+  // knows which models each key advertises, and re-deriving that here is how the
+  // two paths drifted apart (this one used to write account-wide verdicts).
+  const result = await probeSiteModels(params.site.id, {
+    scope: params.site.postRefreshProbeScope === 'all' ? 'all' : 'single',
+    modelName: params.site.postRefreshProbeScope === 'all'
+      ? undefined
+      : (params.site.postRefreshProbeModel || params.discoveredModels[0]),
+    latencyThresholdMs: params.site.postRefreshProbeLatencyThresholdMs ?? 0,
+    trigger: 'post-refresh',
+  });
+  if (!result.success) return undefined;
 
   return {
-    scope,
-    probed: details.length,
-    unsupported: unsupportedModels.length,
-    inconclusive: inconclusiveModels.length,
-    details,
+    scope: result.scope,
+    probed: result.probed,
+    unsupported: result.unsupported,
+    inconclusive: result.inconclusive,
+    details: result.details.map((detail) => ({
+      modelName: detail.modelName,
+      // `not-applicable` is not a model verdict: report it as unproven so the
+      // summary never claims the model itself was rejected.
+      status: (detail.status === 'not-applicable' ? 'inconclusive' : detail.status) as RuntimeModelProbeStatus,
+      latencyMs: detail.latencyMs,
+    })),
   };
 }
 
@@ -1324,6 +1609,9 @@ export async function rebuildTokenRoutesFromAvailability() {
         channelSiteId,
         channel.sourceModel,
         channel.accountId,
+        // Channels are per (account, token, model): a verdict about one key's
+        // upstream group must not delete another key's channel.
+        channel.tokenId,
       );
       if (desiredKeys.has(channelKey) && !forceRemoveDisabled) {
         continue;

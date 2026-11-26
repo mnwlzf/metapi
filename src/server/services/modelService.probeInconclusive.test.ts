@@ -7,6 +7,8 @@ import { and, eq } from 'drizzle-orm';
 import { probeRuntimeModel } from './runtimeModelProbe.js';
 
 // Hoisted mock: probeRuntimeModel returns an inconclusive result (no verdict).
+// Plain factory on purpose: importing the real module would open a DB handle
+// before DATA_DIR points at this test's temp directory.
 vi.mock('./runtimeModelProbe.js', () => ({
   probeRuntimeModel: vi.fn().mockResolvedValue({
     status: 'inconclusive',
@@ -88,11 +90,11 @@ describe('probeSiteModels disables every model it could not confirm', () => {
       available: true,
     }).run();
 
-    return { siteId, accountId };
+    return { siteId, accountId, tokenId };
   }
 
   it('disables a model whose probe reached no conclusion', async () => {
-    const { siteId, accountId } = await seedSite();
+    const { siteId, accountId, tokenId } = await seedSite();
 
     const result = await probeSiteModels(siteId, { scope: 'all' });
 
@@ -103,17 +105,16 @@ describe('probeSiteModels disables every model it could not confirm', () => {
     expect(disabled).toHaveLength(1);
     expect(disabled[0]).toMatchObject({ modelName: 'gpt-4o', source: 'probe' });
 
-    const maRow = await db.select().from(schema.modelAvailability)
-      .where(and(
-        eq(schema.modelAvailability.accountId, accountId),
-        eq(schema.modelAvailability.modelName, 'gpt-4o'),
-      ))
+    // Availability is per key: that is what routing builds channels from, and the
+    // account-level flag is only an aggregate refreshed by discovery.
+    const tokenRow = await db.select().from(schema.tokenModelAvailability)
+      .where(eq(schema.tokenModelAvailability.tokenId, tokenId))
       .get();
-    expect(maRow?.available).toBe(false);
+    expect(tokenRow?.available).toBe(false);
   });
 
   it('clears a stale connectivity=false when a probe confirms the model works', async () => {
-    const { siteId, accountId } = await seedSite();
+    const { siteId, accountId, tokenId } = await seedSite();
     await db.update(schema.modelAvailability)
       .set({ connectivity: false })
       .where(eq(schema.modelAvailability.accountId, accountId))
@@ -127,11 +128,8 @@ describe('probeSiteModels disables every model it could not confirm', () => {
     const result = await probeSiteModels(siteId, { scope: 'all' });
     expect(result.unsupported).toBe(0);
 
-    const row = await db.select().from(schema.modelAvailability)
-      .where(and(
-        eq(schema.modelAvailability.accountId, accountId),
-        eq(schema.modelAvailability.modelName, 'gpt-4o'),
-      ))
+    const row = await db.select().from(schema.tokenModelAvailability)
+      .where(eq(schema.tokenModelAvailability.tokenId, tokenId))
       .get();
     expect(row?.connectivity).toBe(true);
     expect(row?.available).toBe(true);

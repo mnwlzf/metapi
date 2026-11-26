@@ -877,6 +877,24 @@
           "notNull": false,
           "defaultValue": "datetime('now')",
           "primaryKey": false
+        },
+        "token_id": {
+          "logicalType": "integer",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
+        },
+        "run_id": {
+          "logicalType": "text",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
+        },
+        "estimated_cost": {
+          "logicalType": "real",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
         }
       }
     },
@@ -1975,6 +1993,12 @@
           "notNull": false,
           "defaultValue": null,
           "primaryKey": false
+        },
+        "token_id": {
+          "logicalType": "integer",
+          "notNull": true,
+          "defaultValue": "0",
+          "primaryKey": false
         }
       }
     },
@@ -2633,6 +2657,14 @@
       "unique": false
     },
     {
+      "name": "probe_logs_run_idx",
+      "table": "probe_logs",
+      "columns": [
+        "run_id"
+      ],
+      "unique": false
+    },
+    {
       "name": "probe_logs_site_created_at_idx",
       "table": "probe_logs",
       "columns": [
@@ -2646,6 +2678,15 @@
       "table": "probe_logs",
       "columns": [
         "status",
+        "created_at"
+      ],
+      "unique": false
+    },
+    {
+      "name": "probe_logs_token_created_at_idx",
+      "table": "probe_logs",
+      "columns": [
+        "token_id",
         "created_at"
       ],
       "unique": false
@@ -2972,11 +3013,12 @@
       "unique": false
     },
     {
-      "name": "site_disabled_models_site_account_model_unique",
+      "name": "site_disabled_models_site_account_token_model_unique",
       "table": "site_disabled_models",
       "columns": [
         "site_id",
         "account_id",
+        "token_id",
         "model_name"
       ],
       "unique": true
@@ -3187,11 +3229,12 @@
       ]
     },
     {
-      "name": "site_disabled_models_site_account_model_unique",
+      "name": "site_disabled_models_site_account_token_model_unique",
       "table": "site_disabled_models",
       "columns": [
         "site_id",
         "account_id",
+        "token_id",
         "model_name"
       ]
     },
@@ -3305,6 +3348,17 @@
         "id"
       ],
       "onDelete": "CASCADE"
+    },
+    {
+      "table": "probe_logs",
+      "columns": [
+        "token_id"
+      ],
+      "referencedTable": "account_tokens",
+      "referencedColumns": [
+        "id"
+      ],
+      "onDelete": "SET NULL"
     },
     {
       "table": "proxy_debug_attempts",

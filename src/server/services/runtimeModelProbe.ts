@@ -47,6 +47,12 @@ export type RuntimeModelProbeResult = {
   reason: string;
 };
 
+/**
+ * Re-exported for callers that already depend on this module; the classifier
+ * itself lives in a dependency-free module so importing it never opens a DB.
+ */
+export { isGroupScopedModelRejection } from './probeFailureClassification.js';
+
 const NON_CONVERSATION_MODEL_PATTERNS = [
   /(^|[-_/])embedding(s)?($|[-_/])/i,
   /(^|[-_/])rerank($|[-_/])/i,
@@ -531,20 +537,88 @@ async function drainLateUpstreamResponse(response: RuntimeResponse): Promise<voi
   }
 }
 
+type ProbeUsage = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+};
+
 /**
- * 从 OpenAI 格式的响应中提取 token 使用量
+ * Full usage split, so a probe's cost can be priced exactly like a real request.
+ * A probe is a billed upstream call; what probing itself costs has to be visible.
  */
-function extractTokensFromResponse(responseText: string | undefined): number | null {
+function extractProbeUsage(responseText: string | undefined): ProbeUsage | null {
   if (!responseText) return null;
   try {
-    const response = JSON.parse(responseText);
-    if (response.usage && typeof response.usage.total_tokens === 'number') {
-      return response.usage.total_tokens;
-    }
+    const response = JSON.parse(responseText) as Record<string, any>;
+    const usage = response?.usage;
+    if (!usage || typeof usage !== 'object') return null;
+    const promptTokens = toNonNegativeInt(usage.prompt_tokens ?? usage.input_tokens);
+    const completionTokens = toNonNegativeInt(usage.completion_tokens ?? usage.output_tokens);
+    const totalTokens = toNonNegativeInt(usage.total_tokens) || promptTokens + completionTokens;
+    if (totalTokens <= 0) return null;
+    const cacheReadTokens = toNonNegativeInt(
+      usage.prompt_tokens_details?.cached_tokens
+      ?? usage.cache_read_input_tokens
+      ?? usage.cache_read_tokens,
+    );
+    const cacheCreationTokens = toNonNegativeInt(
+      usage.cache_creation_input_tokens ?? usage.cache_creation_tokens,
+    );
+    return { promptTokens, completionTokens, totalTokens, cacheReadTokens, cacheCreationTokens };
   } catch {
-    // 解析失败，返回 null
+    return null;
   }
-  return null;
+}
+
+function toNonNegativeInt(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+}
+
+/**
+ * Price one probe with this instance's model, using that key's group.
+ *
+ * Failures degrade to null (unknown cost) instead of 0, so an unpriced probe
+ * never looks free; a pricing hiccup must not change a verdict either.
+ */
+async function estimateProbeCost(input: {
+  site: typeof schema.sites.$inferSelect;
+  account: typeof schema.accounts.$inferSelect;
+  modelName: string;
+  tokenGroup?: string | null;
+  usage: ProbeUsage | null;
+}): Promise<number | null> {
+  if (!input.usage) return null;
+  try {
+    const { estimateProxyCost } = await import('./modelPricingService.js');
+    const cost = await estimateProxyCost({
+      site: {
+        id: input.site.id,
+        url: input.site.url,
+        platform: input.site.platform,
+        apiKey: input.site.apiKey,
+      },
+      account: {
+        id: input.account.id,
+        accessToken: input.account.accessToken,
+        apiToken: input.account.apiToken,
+      },
+      modelName: input.modelName,
+      promptTokens: input.usage.promptTokens,
+      completionTokens: input.usage.completionTokens,
+      totalTokens: input.usage.totalTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      cacheCreationTokens: input.usage.cacheCreationTokens,
+      promptTokensIncludeCache: true,
+      tokenGroup: input.tokenGroup ?? null,
+    });
+    return Number.isFinite(cost) && cost >= 0 ? Math.round(cost * 1_000_000) / 1_000_000 : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -649,6 +723,12 @@ export async function probeRuntimeModel(input: {
   modelName: string;
   timeoutMs: number;
   tokenValue?: string | null;
+  /** The key being probed; stored with the log so a verdict is attributable. */
+  tokenId?: number | null;
+  /** The key's upstream group; prices and verdicts belong to it. */
+  tokenGroup?: string | null;
+  /** Probe run (batch) this attempt belongs to. */
+  runId?: string | null;
 }): Promise<RuntimeModelProbeResult> {
   if (!isLikelyConversationModel(input.modelName)) {
     return {
@@ -837,10 +917,22 @@ export async function probeRuntimeModel(input: {
               ? await drainProbeStream(stream.reader, stream.text)
               : stream.text;
             const folded = foldProbeResponseText(fullText, input.modelName);
-            const tokensUsed = extractTokensFromResponse(folded);
+            const usage = extractProbeUsage(folded);
+            const tokensUsed = usage?.totalTokens ?? null;
+            // Price the probe with the key's own group multiplier: probing is real
+            // billed spend, and "what did probing cost" must be answerable.
+            const estimatedCost = await estimateProbeCost({
+              site: input.site,
+              account: input.account,
+              modelName: input.modelName,
+              tokenGroup: input.tokenGroup ?? null,
+              usage,
+            });
             await db.insert(probeLogs).values({
               siteId: input.site.id,
               accountId: input.account.id,
+              tokenId: input.tokenId ?? null,
+              runId: input.runId ?? null,
               modelName: input.modelName,
               questionCategory: probeQuestion.category,
               questionText: probeQuestion.question,
@@ -848,6 +940,7 @@ export async function probeRuntimeModel(input: {
               status: 'success',
               latencyMs: probeLatencyMs,
               tokensUsed,
+              estimatedCost,
             }).catch((err: unknown) => console.error('[probe-log] Failed to insert probe log:', err));
           } catch {
             // 后台日志失败不影响测活结果
@@ -877,6 +970,8 @@ export async function probeRuntimeModel(input: {
       await db.insert(probeLogs).values({
         siteId: input.site.id,
         accountId: input.account.id,
+        tokenId: input.tokenId ?? null,
+        runId: input.runId ?? null,
         modelName: input.modelName,
         questionCategory: probeQuestion.category,
         questionText: probeQuestion.question,
@@ -901,6 +996,8 @@ export async function probeRuntimeModel(input: {
     await db.insert(probeLogs).values({
       siteId: input.site.id,
       accountId: input.account.id,
+      tokenId: input.tokenId ?? null,
+      runId: input.runId ?? null,
       modelName: input.modelName,
       questionCategory: probeQuestion.category,
       questionText: probeQuestion.question,
@@ -932,6 +1029,8 @@ export async function probeRuntimeModel(input: {
     await db.insert(probeLogs).values({
       siteId: input.site.id,
       accountId: input.account.id,
+      tokenId: input.tokenId ?? null,
+      runId: input.runId ?? null,
       modelName: input.modelName,
       questionCategory: 'unknown',
       questionText,

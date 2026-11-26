@@ -993,11 +993,14 @@ export const api = {
       timeout: number;
       avgLatencyMs: number;
       totalTokens: number;
+      /** USD spent by probing in the window (every probe is a billed call). */
+      totalCost?: number;
     }>,
   getProbeLogFilters: () =>
     request('/api/probe-logs/filters') as Promise<{
       sites: { id: number; name: string }[];
       accounts: { id: number; username: string }[];
+      tokens: { id: number; name: string; group: string | null; accountId: number | null }[];
       models: string[];
     }>,
   getDesktopInfo: () =>

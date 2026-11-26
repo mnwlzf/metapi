@@ -746,11 +746,14 @@ export default function Sites() {
               if (/响应延迟/.test(r)) return r;
               return r.length > 60 ? r.slice(0, 57) + '…' : r;
             })();
-            addLog(`${s}${lat}  ${d.modelName}${reasonText ? `  —  ${reasonText}` : ''}`, c);
+            const keyLabel = d.tokenName
+              ? ` [${d.tokenName}${d.tokenGroup ? ` · #${d.tokenGroup}` : ''}]`
+              : '';
+            addLog(`${s}${lat}  ${d.modelName}${keyLabel}${reasonText ? `  —  ${reasonText}` : ''}`, c);
             setTimeout(() => probeLogEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 30);
           } else if (type === 'action') {
-            if (d.action === 'disabled') addLog(`  ↳ ${tr('已加入该 key 的禁用列表')}: ${d.modelName}`, 'var(--color-text-muted)');
-            else if (d.action === 'enabled') addLog(`  ↳ ${tr('探测成功，已自动恢复（移出禁用列表）')}: ${d.modelName}`, 'var(--color-success)');
+            if (d.action === 'disabled') addLog(`  ↳ ${tr('已加入该 key 的禁用列表')}: ${d.modelName}${d.tokenName ? ` [${d.tokenName}]` : ''}`, 'var(--color-text-muted)');
+            else if (d.action === 'enabled') addLog(`  ↳ ${tr('探测成功，已自动恢复（移出禁用列表）')}: ${d.modelName}${d.tokenName ? ` [${d.tokenName}]` : ''}`, 'var(--color-success)');
           } else if (type === 'complete') {
             const inconclusiveCount = Number(d.inconclusive || 0);
             const unsupportedCount = Number(d.unsupported || 0);

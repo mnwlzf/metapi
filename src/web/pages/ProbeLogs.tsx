@@ -30,6 +30,13 @@ type ProbeLog = {
   status: string;
   latencyMs: number | null;
   tokensUsed: number | null;
+  /** Which upstream key was probed (a verdict belongs to one key's group). */
+  tokenId?: number | null;
+  tokenName?: string | null;
+  tokenGroup?: string | null;
+  runId?: string | null;
+  /** USD spent by this single probe. */
+  estimatedCost?: number | null;
   errorMessage: string | null;
   createdAt: string;
   siteName?: string;
@@ -107,7 +114,10 @@ function ProbeDetailFields({
       </div>
       <div className="probe-detail-item">
         <div className="probe-detail-label">Token</div>
-        <div className="probe-detail-value">{log.tokensUsed || '-'}</div>
+        <div className="probe-detail-value">
+          {log.tokensUsed || '-'}
+          {typeof log.estimatedCost === 'number' ? ` · ${log.estimatedCost.toFixed(6)}` : ''}
+        </div>
       </div>
 
       {log.errorMessage ? (
@@ -317,6 +327,10 @@ export default function ProbeLogs() {
           <div className="probe-stat-card">
             <div className="probe-stat-label">{tr('总 Token')}</div>
             <div className="probe-stat-value">{stats.totalTokens || 0}</div>
+      </div>
+      <div className="probe-stat-card">
+        <div className="probe-stat-label">{tr('消耗额度')}</div>
+        <div className="probe-stat-value">${Number(stats.totalCost || 0).toFixed(6)}</div>
           </div>
         </div>
       )}
@@ -512,9 +526,11 @@ export default function ProbeLogs() {
                     <th>{tr('时间')}</th>
                     <th>{tr('模型')}</th>
                     <th>{tr('站点/账号')}</th>
+            <th>{tr('令牌')}</th>
                     <th>{tr('分类')}</th>
                     <th>{tr('延迟')}</th>
                     <th>Token</th>
+            <th>{tr('消耗额度')}</th>
                     <th>{tr('问题')}</th>
                   </tr>
                 </thead>
@@ -546,6 +562,9 @@ export default function ProbeLogs() {
                       </td>
                       <td>
                         {log.tokensUsed || '-'}
+          </td>
+          <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+            {typeof log.estimatedCost === 'number' ? `${log.estimatedCost.toFixed(6)}` : '-'}
                       </td>
                       <td className="probe-question-cell">
                         {log.questionText}

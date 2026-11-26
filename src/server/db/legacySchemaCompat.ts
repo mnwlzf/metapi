@@ -70,6 +70,11 @@ const BOOTSTRAP_OWNED_LEGACY_COLUMNS = [
   'proxy_logs.client_confidence',
   'proxy_logs.downstream_api_key_id',
   'proxy_logs.token_id',
+  // Per-key probe verdicts: the log names the key, and the disable row records
+  // which key's group the verdict belongs to.
+  'probe_logs.token_id',
+  'probe_logs.run_id',
+  'probe_logs.estimated_cost',
 ];
 
 const BOOTSTRAP_OWNED_LEGACY_INDEXES = [
@@ -90,6 +95,8 @@ const BOOTSTRAP_OWNED_LEGACY_INDEXES = [
   'probe_logs_account_created_at_idx',
   'probe_logs_model_created_at_idx',
   'probe_logs_status_created_at_idx',
+  'probe_logs_token_created_at_idx',
+  'probe_logs_run_idx',
   'site_model_context_site_model_unique',
   'site_model_context_site_id_idx',
 ];
@@ -145,6 +152,10 @@ const LEGACY_COMPAT_UPDATES = new Set(
 // (site_id, model_name) uniqueness replaced by (site_id, account_id, model_name).
 const LEGACY_COMPAT_DROPPABLE_INDEXES = new Set([
   'site_disabled_models_site_model_unique',
+  // Replaced by the per-key uniqueness: (site, account, token, model). A
+  // disable verdict belongs to one upstream key, so the account-wide index has
+  // to go or two keys of one account could not disagree about a model.
+  'site_disabled_models_site_account_model_unique',
 ]);
 
 export function classifyLegacyCompatMutation(sqlText: string): LegacySchemaCompatClassification {

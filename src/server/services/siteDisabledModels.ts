@@ -26,8 +26,22 @@ export type SiteDisabledModelsIndex = Map<number, {
     raw: Set<string>;
     canonicalFree: Set<string>;
     canonicalNonFree: Set<string>;
+    /**
+     * Verdicts that belong to ONE upstream key (`token_id`), keyed by token id.
+     * A model is served by the token's group, so one key's "not supported" says
+     * nothing about the account's other keys — the account-level sets above hold
+     * only account-wide rows (token_id = 0).
+     */
+    byToken: Map<number, {
+      raw: Set<string>;
+      canonicalFree: Set<string>;
+      canonicalNonFree: Set<string>;
+    }>;
   }>;
 }>;
+
+/** `site_disabled_models.token_id` value meaning "the whole account". */
+export const ACCOUNT_WIDE_DISABLE_TOKEN_ID = 0;
 
 function normalizeRawModelName(modelName: string): string {
   return String(modelName || '').trim().toLowerCase();
@@ -61,6 +75,13 @@ export function canonicalLookupKeyPreservingFree(modelName: string): string {
 
 function makeEntry() {
   return { raw: new Set<string>(), canonicalFree: new Set<string>(), canonicalNonFree: new Set<string>() };
+}
+
+type DisableMatchEntry = ReturnType<typeof makeEntry>;
+type AccountDisableEntry = DisableMatchEntry & { byToken: Map<number, DisableMatchEntry> };
+
+function makeAccountEntry(): AccountDisableEntry {
+  return { ...makeEntry(), byToken: new Map() };
 }
 
 /**
@@ -151,6 +172,7 @@ export async function loadSiteDisabledModelsIndex(): Promise<SiteDisabledModelsI
   const rows = await db.select({
     siteId: schema.siteDisabledModels.siteId,
     accountId: schema.siteDisabledModels.accountId,
+    tokenId: schema.siteDisabledModels.tokenId,
     modelName: schema.siteDisabledModels.modelName,
   }).from(schema.siteDisabledModels).all();
 
@@ -168,9 +190,26 @@ export async function loadSiteDisabledModelsIndex(): Promise<SiteDisabledModelsI
     }
 
     const accountId = row.accountId == null ? null : Number(row.accountId);
-    const target = accountId != null && Number.isFinite(accountId) && accountId > 0
-      ? (entry.byAccount.get(accountId) ?? (entry.byAccount.set(accountId, makeEntry()), entry.byAccount.get(accountId)!))
-      : entry;
+    if (accountId == null || !Number.isFinite(accountId) || accountId <= 0) {
+      // Legacy site-wide row: applies to every key of the site.
+      entry.raw.add(raw);
+      const canonical = canonicalizeModelName(row.modelName);
+      if (canonical) {
+        if (hasFreeSuffix(row.modelName)) entry.canonicalFree.add(canonical);
+        else entry.canonicalNonFree.add(canonical);
+      }
+      continue;
+    }
+
+    const accountEntry = entry.byAccount.get(accountId)
+      ?? (entry.byAccount.set(accountId, makeAccountEntry()), entry.byAccount.get(accountId)!);
+    const tokenId = Number(row.tokenId ?? 0);
+    // token_id 0 = the whole account; anything else narrows the verdict to that
+    // one upstream key.
+    const target = tokenId > 0
+      ? (accountEntry.byToken.get(tokenId)
+        ?? (accountEntry.byToken.set(tokenId, makeEntry()), accountEntry.byToken.get(tokenId)!))
+      : accountEntry;
 
     target.raw.add(raw);
     const canonical = canonicalizeModelName(row.modelName);
@@ -199,10 +238,17 @@ export async function loadSiteDisabledModelsIndex(): Promise<SiteDisabledModelsI
  * Exact-name matching is deliberate: these rows are written from the very model
  * list the probe iterates, so the spelling is identical (canonical matching
  * would risk reverting a differently-named sibling).
+ *
+ * Scope is the key that just succeeded plus account-wide (token_id = 0) rows: an
+ * account-wide verdict was drawn without knowing which key serves the model, so
+ * per-key success supersedes it. Another key's verdict is never touched — it
+ * describes a different upstream group.
  */
 export async function clearAutoDisabledModels(input: {
   siteId: number;
   accountId?: number | null;
+  /** The key that just answered. Omit for account-wide (legacy) semantics. */
+  tokenId?: number | null;
   modelNames: string[];
 }): Promise<string[]> {
   const siteId = Number(input.siteId);
@@ -220,6 +266,11 @@ export async function clearAutoDisabledModels(input: {
     ? eq(schema.siteDisabledModels.accountId, rawAccountId)
     : isNull(schema.siteDisabledModels.accountId);
 
+  const rawTokenId = input.tokenId == null ? null : Number(input.tokenId);
+  const tokenScope = rawTokenId != null && Number.isFinite(rawTokenId) && rawTokenId > 0
+    ? inArray(schema.siteDisabledModels.tokenId, [ACCOUNT_WIDE_DISABLE_TOKEN_ID, rawTokenId])
+    : eq(schema.siteDisabledModels.tokenId, ACCOUNT_WIDE_DISABLE_TOKEN_ID);
+
   // Read first, then delete by id: `DELETE ... RETURNING` is not portable across
   // the supported dialects, and the caller wants the names for its progress log.
   const candidates = await db.select({
@@ -231,6 +282,7 @@ export async function clearAutoDisabledModels(input: {
     .where(and(
       eq(schema.siteDisabledModels.siteId, siteId),
       accountScope,
+      tokenScope,
       inArray(schema.siteDisabledModels.modelName, modelNames),
     ))
     .all();
@@ -259,20 +311,23 @@ function matches(entry: { raw: Set<string>; canonicalFree: Set<string>; canonica
 }
 
 /**
- * Whether a model is disabled for a site and optionally for a specific key.
+ * Whether a model is disabled for a site, and optionally for a specific key.
  *
- * Per-key rows (account_id set) are matched when `accountId` is provided.
- * Legacy site-wide rows (account_id NULL), if any exist after the v1.8 boot
- * migration, match every key of the site for backward compatibility.
+ * Per-key rows (account_id set) are matched when `accountId` is provided, and a
+ * row scoped to one upstream key (token_id > 0) only matches when that same key
+ * is being evaluated — a verdict about one group must not silence another.
+ * Legacy site-wide rows (account_id NULL) match every key of the site.
  *
- * Callers should always pass `accountId` when querying from a per-key context.
- * Without it, only legacy site-wide rows are checked (empty after migration).
+ * Pass `tokenId` from every context that knows which key will carry the request
+ * (route channels, per-token availability); omit it when the question is "is
+ * this blocked for the account as a whole".
  */
 export function isModelDisabledForSite(
   index: SiteDisabledModelsIndex | null | undefined,
   siteId: number | null | undefined,
   modelName: string | null | undefined,
   accountId?: number | null,
+  tokenId?: number | null,
 ): boolean {
   if (!index || siteId == null || !Number.isFinite(siteId) || siteId <= 0) return false;
   const entry = index.get(siteId);
@@ -281,10 +336,47 @@ export function isModelDisabledForSite(
   // Legacy site-wide rows (NULL account_id) — empty after migration.
   if (matches(entry, modelName || '')) return true;
 
-  // Per-key rows apply only when evaluating that key.
-  if (accountId != null && Number.isFinite(accountId) && accountId > 0) {
-    const perAccount = entry.byAccount.get(accountId);
-    if (perAccount && matches(perAccount, modelName || '')) return true;
+  if (accountId == null || !Number.isFinite(accountId) || accountId <= 0) return false;
+  const perAccount = entry.byAccount.get(accountId);
+  if (!perAccount) return false;
+
+  // Account-wide verdicts apply to every key of this account.
+  if (matches(perAccount, modelName || '')) return true;
+
+  const rawTokenId = tokenId == null ? null : Number(tokenId);
+  if (rawTokenId != null && Number.isFinite(rawTokenId) && rawTokenId > 0) {
+    const perToken = perAccount.byToken.get(rawTokenId);
+    return !!perToken && matches(perToken, modelName || '');
   }
+
+  // No key given: a single key's verdict does not make the model unavailable to
+  // the account, so only account-wide rows count here.
   return false;
+}
+
+/**
+ * Per-key verdicts for one model, for callers that must distinguish "this model
+ * is gone" from "these keys cannot serve it".
+ */
+export function getDisabledTokenIds(
+  index: SiteDisabledModelsIndex | null | undefined,
+  siteId: number | null | undefined,
+  modelName: string | null | undefined,
+  accountId: number | null | undefined,
+): Set<number> {
+  const disabledTokens = new Set<number>();
+  if (!index || siteId == null || !Number.isFinite(siteId) || siteId <= 0) return disabledTokens;
+  const entry = index.get(siteId);
+  if (!entry) return disabledTokens;
+  if (matches(entry, modelName || '')) return disabledTokens;
+
+  const rawAccountId = accountId == null ? null : Number(accountId);
+  if (rawAccountId == null || !Number.isFinite(rawAccountId) || rawAccountId <= 0) return disabledTokens;
+  const perAccount = entry.byAccount.get(rawAccountId);
+  if (!perAccount || matches(perAccount, modelName || '')) return disabledTokens;
+
+  for (const [tokenId, tokenEntry] of perAccount.byToken) {
+    if (matches(tokenEntry, modelName || '')) disabledTokens.add(tokenId);
+  }
+  return disabledTokens;
 }

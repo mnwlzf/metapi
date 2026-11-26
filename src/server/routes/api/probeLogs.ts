@@ -1,8 +1,32 @@
 import { FastifyInstance } from 'fastify';
 import { db } from '../../db/index.js';
-import { probeLogs, sites, accounts } from '../../db/schema.js';
+import { probeLogs, sites, accounts, accountTokens } from '../../db/schema.js';
 import { eq, desc, and, gte, lte, sql } from 'drizzle-orm';
 import { normalizePageOffset, normalizePageSize } from './paginationNormalizers.js';
+
+const PROBE_LOG_SELECT = {
+  id: probeLogs.id,
+  siteId: probeLogs.siteId,
+  accountId: probeLogs.accountId,
+  tokenId: probeLogs.tokenId,
+  runId: probeLogs.runId,
+  modelName: probeLogs.modelName,
+  questionCategory: probeLogs.questionCategory,
+  questionText: probeLogs.questionText,
+  responseText: probeLogs.responseText,
+  status: probeLogs.status,
+  latencyMs: probeLogs.latencyMs,
+  tokensUsed: probeLogs.tokensUsed,
+  estimatedCost: probeLogs.estimatedCost,
+  errorMessage: probeLogs.errorMessage,
+  createdAt: probeLogs.createdAt,
+  siteName: sites.name,
+  accountUsername: accounts.username,
+  // A verdict belongs to one upstream key: without it the log cannot answer
+  // "which key was probed", which is what made wrong verdicts unattributable.
+  tokenName: accountTokens.name,
+  tokenGroup: accountTokens.tokenGroup,
+};
 
 export async function registerProbeLogsRoutes(app: FastifyInstance) {
   // 获取测活日志列表
@@ -10,6 +34,8 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     const {
       siteId,
       accountId,
+      tokenId,
+      runId,
       modelName,
       status,
       startTime,
@@ -19,6 +45,8 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     } = request.query as {
       siteId?: string;
       accountId?: string;
+      tokenId?: string;
+      runId?: string;
       modelName?: string;
       status?: string;
       startTime?: string;
@@ -43,6 +71,17 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
       }
     }
 
+    if (tokenId) {
+      const parsedTokenId = parseInt(tokenId, 10);
+      if (Number.isFinite(parsedTokenId) && parsedTokenId > 0) {
+        conditions.push(eq(probeLogs.tokenId, parsedTokenId));
+      }
+    }
+
+    if (runId) {
+      conditions.push(eq(probeLogs.runId, runId));
+    }
+
     if (modelName) {
       conditions.push(eq(probeLogs.modelName, modelName));
     }
@@ -65,25 +104,11 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     const offsetNum = normalizePageOffset(offset);
 
     const logs = await db
-      .select({
-        id: probeLogs.id,
-        siteId: probeLogs.siteId,
-        accountId: probeLogs.accountId,
-        modelName: probeLogs.modelName,
-        questionCategory: probeLogs.questionCategory,
-        questionText: probeLogs.questionText,
-        responseText: probeLogs.responseText,
-        status: probeLogs.status,
-        latencyMs: probeLogs.latencyMs,
-        tokensUsed: probeLogs.tokensUsed,
-        errorMessage: probeLogs.errorMessage,
-        createdAt: probeLogs.createdAt,
-        siteName: sites.name,
-        accountUsername: accounts.username,
-      })
+      .select(PROBE_LOG_SELECT)
       .from(probeLogs)
       .leftJoin(sites, eq(probeLogs.siteId, sites.id))
       .leftJoin(accounts, eq(probeLogs.accountId, accounts.id))
+      .leftJoin(accountTokens, eq(probeLogs.tokenId, accountTokens.id))
       .where(whereClause)
       .orderBy(desc(probeLogs.createdAt))
       .limit(limitNum)
@@ -121,7 +146,7 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     };
   });
 
-  // 获取测活筛选选项（站点/账号/模型去重列表）
+  // 获取测活筛选选项（站点/账号/令牌/模型去重列表）
   app.get('/api/probe-logs/filters', async (_request, _reply) => {
     const siteRows = await db
       .selectDistinct({
@@ -141,6 +166,17 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
       .leftJoin(accounts, eq(probeLogs.accountId, accounts.id))
       .orderBy(accounts.username);
 
+    const tokenRows = await db
+      .selectDistinct({
+        tokenId: probeLogs.tokenId,
+        tokenName: accountTokens.name,
+        tokenGroup: accountTokens.tokenGroup,
+        accountId: probeLogs.accountId,
+      })
+      .from(probeLogs)
+      .leftJoin(accountTokens, eq(probeLogs.tokenId, accountTokens.id))
+      .orderBy(accountTokens.name);
+
     const modelRows = await db
       .selectDistinct({ modelName: probeLogs.modelName })
       .from(probeLogs)
@@ -153,6 +189,14 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
       accounts: accountRows
         .filter((row: { accountId: number | null }) => row.accountId !== null)
         .map((row: { accountId: number; accountUsername: string | null }) => ({ id: row.accountId, username: row.accountUsername || `账号 #${row.accountId}` })),
+      tokens: tokenRows
+        .filter((row: { tokenId: number | null }) => row.tokenId !== null)
+        .map((row: { tokenId: number; tokenName: string | null; tokenGroup: string | null; accountId: number | null }) => ({
+          id: row.tokenId,
+          name: row.tokenName || `令牌 #${row.tokenId}`,
+          group: row.tokenGroup,
+          accountId: row.accountId,
+        })),
       models: modelRows
         .filter((row: { modelName: string | null }) => row.modelName)
         .map((row: { modelName: string }) => row.modelName),
@@ -186,6 +230,9 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
         timeout: sql<number>`sum(case when status = 'timeout' then 1 else 0 end)`,
         avgLatencyMs: sql<number>`avg(latency_ms)`,
         totalTokens: sql<number>`sum(tokens_used)`,
+        // Probing is billed spend on every attempt: the summary has to show the
+        // money, not just how many rows were written.
+        totalCost: sql<number>`coalesce(sum(estimated_cost), 0)`,
       })
       .from(probeLogs)
       .where(whereClause);
@@ -197,6 +244,7 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
       timeout: 0,
       avgLatencyMs: 0,
       totalTokens: 0,
+      totalCost: 0,
     };
   });
 
@@ -205,25 +253,11 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
 
     const log = await db
-      .select({
-        id: probeLogs.id,
-        siteId: probeLogs.siteId,
-        accountId: probeLogs.accountId,
-        modelName: probeLogs.modelName,
-        questionCategory: probeLogs.questionCategory,
-        questionText: probeLogs.questionText,
-        responseText: probeLogs.responseText,
-        status: probeLogs.status,
-        latencyMs: probeLogs.latencyMs,
-        tokensUsed: probeLogs.tokensUsed,
-        errorMessage: probeLogs.errorMessage,
-        createdAt: probeLogs.createdAt,
-        siteName: sites.name,
-        accountUsername: accounts.username,
-      })
+      .select(PROBE_LOG_SELECT)
       .from(probeLogs)
       .leftJoin(sites, eq(probeLogs.siteId, sites.id))
       .leftJoin(accounts, eq(probeLogs.accountId, accounts.id))
+      .leftJoin(accountTokens, eq(probeLogs.tokenId, accountTokens.id))
       .where(eq(probeLogs.id, parseInt(id, 10)))
       .get();
 

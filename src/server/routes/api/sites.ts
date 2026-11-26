@@ -1244,6 +1244,7 @@ export async function sitesRoutes(app: FastifyInstance) {
     // Get models from token_model_availability (token-level)
     const tokenModels = await db.select({
       accountId: schema.accounts.id,
+      tokenId: schema.accountTokens.id,
       modelName: schema.tokenModelAvailability.modelName,
     })
       .from(schema.tokenModelAvailability)
@@ -1255,17 +1256,22 @@ export async function sitesRoutes(app: FastifyInstance) {
           eq(schema.tokenModelAvailability.available, true),
         ),
       )
-      .all() as Array<{ accountId: number; modelName: string }>;
+      .all() as Array<{ accountId: number; tokenId: number; modelName: string }>;
 
     // The availability flags only record what upstream last advertised. A model
-    // can be advertised and still be disabled for this key (probe verdict,
-    // operator choice, new-model policy), and the disable list is the authority
-    // on "not usable" — so filter by it here. Without this the site panel kept
-    // listing every model right after a probe disabled two thirds of them.
+    // can be advertised and still be unusable for a key (its group does not serve
+    // it), and the disable list is the authority — so filter by it per key: the
+    // model stays listed while at least one key of the account can serve it.
     const disabledModelsIndex = await loadSiteDisabledModelsIndex();
     const models = Array.from(new Set(
       [...accountModels, ...tokenModels]
-        .filter((row) => !isModelDisabledForSite(disabledModelsIndex, id, row.modelName, row.accountId))
+        .filter((row) => !isModelDisabledForSite(
+          disabledModelsIndex,
+          id,
+          row.modelName,
+          row.accountId,
+          'tokenId' in row ? row.tokenId : null,
+        ))
         .map((row) => String(row.modelName || '').trim()),
     )).filter((m) => m.length > 0).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
 
@@ -1283,7 +1289,16 @@ export async function sitesRoutes(app: FastifyInstance) {
     const modelName = typeof body?.modelName === 'string' ? body.modelName.trim() : undefined;
     const parsedThresholdBody = Number(body?.latencyThresholdMs ?? 0);
     const latencyThresholdMsBody = Number.isFinite(parsedThresholdBody) && parsedThresholdBody > 0 ? Math.trunc(parsedThresholdBody) : undefined;
-    const result = await probeSiteModels(id, { scope, modelName, latencyThresholdMs: latencyThresholdMsBody });
+    const parsedTokenIdBody = Number(body?.tokenId ?? 0);
+    const tokenIdBody = Number.isFinite(parsedTokenIdBody) && parsedTokenIdBody > 0 ? Math.trunc(parsedTokenIdBody) : null;
+    const result = await probeSiteModels(id, {
+      scope,
+      modelName,
+      latencyThresholdMs: latencyThresholdMsBody,
+      tokenId: tokenIdBody,
+      force: body?.force === true,
+      trigger: 'manual',
+    });
     if (!result.success) {
       return reply.code(422).send({ error: result.error });
     }
@@ -1291,7 +1306,7 @@ export async function sitesRoutes(app: FastifyInstance) {
   });
 
   // Streaming probe via SSE
-  app.get<{ Params: { id: string }; Querystring: { scope?: string; modelName?: string; latencyThresholdMs?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { scope?: string; modelName?: string; latencyThresholdMs?: string; tokenId?: string; force?: string } }>(
     '/api/sites/:id/probe-stream',
     async (request, reply) => {
       reply.hijack();
@@ -1313,13 +1328,18 @@ export async function sitesRoutes(app: FastifyInstance) {
       const modelName = q.modelName?.trim() || undefined;
       const parsedThreshold = parseInt(q.latencyThresholdMs ?? '', 10);
       const latencyThresholdMs = Number.isFinite(parsedThreshold) && parsedThreshold > 0 ? parsedThreshold : undefined;
+      const parsedTokenId = parseInt(q.tokenId ?? '', 10);
+      const tokenId = Number.isFinite(parsedTokenId) && parsedTokenId > 0 ? parsedTokenId : null;
+      // Manual probe: the operator asked for it now, so the per-cell cooldown is
+      // skipped unless explicitly disabled with force=0.
+      const force = q.force !== '0';
 
       // Propagate client disconnect to the probe worker pool
       const probeAbort = new AbortController();
       reply.raw.on('close', () => probeAbort.abort());
 
       try {
-        const result = await probeSiteModels(id, { scope, modelName, latencyThresholdMs, signal: probeAbort.signal }, (ev) => {
+        const result = await probeSiteModels(id, { scope, modelName, latencyThresholdMs, tokenId, force, trigger: 'manual', signal: probeAbort.signal }, (ev) => {
           sseWrite(reply.raw, ev.type, ev);
         });
         if (!probeAbort.signal.aborted) {

@@ -103,6 +103,18 @@ export const siteDisabledModels = sqliteTable('site_disabled_models', {
   siteId: integer('site_id').notNull().references(() => sites.id, { onDelete: 'cascade' }),
   // NULL = disabled for every key of the site; set = disabled for this key only.
   accountId: integer('account_id').references(() => accounts.id, { onDelete: 'cascade' }),
+  /**
+   * Which upstream key the verdict belongs to; 0 = the whole account.
+   *
+   * A model is served (or not) by the *token's group*: the relay answers "not
+   * supported by any configured account in this group", which says nothing about
+   * the account's other keys. Disabling account-wide from one key's answer is
+   * what removed models that another key served fine.
+   *
+   * 0 rather than NULL on purpose: SQLite/MySQL treat NULLs in a unique index as
+   * distinct, which would let duplicate "whole account" rows through.
+   */
+  tokenId: integer('token_id').notNull().default(0),
   modelName: text('model_name').notNull(),
   // Why the row exists, so automatic recovery knows what it may undo:
   // 'probe'  — written by a connectivity probe that got a definite "not
@@ -114,7 +126,7 @@ export const siteDisabledModels = sqliteTable('site_disabled_models', {
   source: text('source'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 }, (table) => ({
-  siteAccountModelUnique: uniqueIndex('site_disabled_models_site_account_model_unique').on(table.siteId, table.accountId, table.modelName),
+  siteAccountTokenModelUnique: uniqueIndex('site_disabled_models_site_account_token_model_unique').on(table.siteId, table.accountId, table.tokenId, table.modelName),
   siteIdIdx: index('site_disabled_models_site_id_idx').on(table.siteId),
   accountIdIdx: index('site_disabled_models_account_id_idx').on(table.accountId),
 }));
@@ -459,6 +471,14 @@ export const probeLogs = sqliteTable('probe_logs', {
   id: integer('id').primaryKey({ autoIncrement: true }),
   siteId: integer('site_id').notNull().references(() => sites.id, { onDelete: 'cascade' }),
   accountId: integer('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  // Which upstream key was probed. A model is served by the token's group, not by
+  // the account as a whole, so a verdict without the token is unattributable —
+  // and unattributable verdicts is exactly what disabled models that another key
+  // of the same account could serve. NULL for rows written before this column.
+  tokenId: integer('token_id').references(() => accountTokens.id, { onDelete: 'set null' }),
+  // One probe run (a manual "probe all", a post-refresh pass, …). Lets the log
+  // page fold hundreds of rows back into the batch that produced them.
+  runId: text('run_id'),
   modelName: text('model_name').notNull(),
   questionCategory: text('question_category').notNull(), // 'math' | 'logic' | 'knowledge' | 'reasoning'
   questionText: text('question_text').notNull(),
@@ -466,6 +486,13 @@ export const probeLogs = sqliteTable('probe_logs', {
   status: text('status').notNull(), // 'success' | 'failed' | 'timeout'
   latencyMs: integer('latency_ms'),
   tokensUsed: integer('tokens_used'),
+  /**
+   * What this single probe cost, in USD. Every probe is a real billed upstream
+   * call, so "how much did probing itself spend" has to be answerable; the value
+   * is this instance's price model for the same usage (the site's own ledger
+   * cannot be attributed per probe without a per-request id).
+   */
+  estimatedCost: real('estimated_cost'),
   errorMessage: text('error_message'),
   createdAt: text('created_at').default(sql`(datetime('now'))`),
 }, (table) => ({
@@ -474,6 +501,8 @@ export const probeLogs = sqliteTable('probe_logs', {
   accountCreatedIdx: index('probe_logs_account_created_at_idx').on(table.accountId, table.createdAt),
   modelCreatedIdx: index('probe_logs_model_created_at_idx').on(table.modelName, table.createdAt),
   statusCreatedIdx: index('probe_logs_status_created_at_idx').on(table.status, table.createdAt),
+  tokenCreatedIdx: index('probe_logs_token_created_at_idx').on(table.tokenId, table.createdAt),
+  runIdx: index('probe_logs_run_idx').on(table.runId),
 }));
 
 export const settings = sqliteTable('settings', {

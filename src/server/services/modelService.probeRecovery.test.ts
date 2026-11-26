@@ -7,6 +7,8 @@ import { and, eq } from 'drizzle-orm';
 import { probeRuntimeModel } from './runtimeModelProbe.js';
 
 // Hoisted mock: the probe answers with whatever the individual test queued.
+// Deliberately a plain factory: importing the real module here would open a DB
+// handle before DATA_DIR points at the test's temp directory.
 vi.mock('./runtimeModelProbe.js', () => ({
   probeRuntimeModel: vi.fn(),
 }));
@@ -68,6 +70,16 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
     }).run();
     const accountId = Number(account.lastInsertRowid);
 
+    // A probe runs per upstream key: the cell comes from the key's own model list.
+    const token = await db.insert(schema.accountTokens).values({
+      accountId,
+      name: 'recovery-key',
+      token: 'sk-recovery-key',
+      tokenGroup: '30',
+      enabled: true,
+    }).run();
+    const tokenId = Number(token.lastInsertRowid);
+
     for (const modelName of modelNames) {
       // A disabled model keeps its availability row (flipped to false), which is
       // why the probe has to look at the disabled list as well.
@@ -76,13 +88,18 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
         modelName,
         available: false,
       }).run();
+      await db.insert(schema.tokenModelAvailability).values({
+        tokenId,
+        modelName,
+        available: false,
+      }).run();
     }
 
-    return { siteId, accountId };
+    return { siteId, accountId, tokenId };
   }
 
   it('removes the disable row a probe wrote once that model answers', async () => {
-    const { siteId, accountId } = await seedSite(['gpt-4o']);
+    const { siteId, accountId, tokenId } = await seedSite(['gpt-4o']);
     await db.insert(schema.siteDisabledModels).values({
       siteId,
       accountId,
@@ -95,17 +112,14 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
     expect(result.recovered).toBe(1);
     expect(result.unsupported).toBe(0);
     expect(await db.select().from(schema.siteDisabledModels).all()).toHaveLength(0);
-    const availability = await db.select().from(schema.modelAvailability)
-      .where(and(
-        eq(schema.modelAvailability.accountId, accountId),
-        eq(schema.modelAvailability.modelName, 'gpt-4o'),
-      ))
+    const availability = await db.select().from(schema.tokenModelAvailability)
+      .where(eq(schema.tokenModelAvailability.tokenId, tokenId))
       .get();
     expect(availability?.available).toBe(true);
   });
 
   it('also recovers legacy rows that predate the provenance column', async () => {
-    const { siteId, accountId } = await seedSite(['gpt-4o']);
+    const { siteId, accountId, tokenId } = await seedSite(['gpt-4o']);
     await db.insert(schema.siteDisabledModels).values({
       siteId,
       accountId,
@@ -121,7 +135,7 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
   });
 
   it.each(['manual', 'policy'])('keeps %s disables even when the model answers', async (source) => {
-    const { siteId, accountId } = await seedSite(['gpt-4o']);
+    const { siteId, accountId, tokenId } = await seedSite(['gpt-4o']);
     await db.insert(schema.siteDisabledModels).values({
       siteId,
       accountId,
@@ -138,7 +152,7 @@ describe('probeSiteModels auto-recovers models that answer again', () => {
   });
 
   it('reports the recovery to the progress stream', async () => {
-    const { siteId, accountId } = await seedSite(['gpt-4o']);
+    const { siteId, accountId, tokenId } = await seedSite(['gpt-4o']);
     await db.insert(schema.siteDisabledModels).values({
       siteId,
       accountId,
