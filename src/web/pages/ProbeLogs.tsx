@@ -160,6 +160,12 @@ export default function ProbeLogs() {
   const [siteId, setSiteId] = useState(searchParams.get('siteId') || '');
   const [accountId, setAccountId] = useState(searchParams.get('accountId') || '');
   const [tokenId, setTokenId] = useState(searchParams.get('tokenId') || '');
+  // Run (batch) view: one probe pass writes hundreds of rows, so the operator needs
+  // "what did the last run do" before drilling into individual attempts.
+  const [viewMode, setViewMode] = useState<'rows' | 'runs'>(
+    searchParams.get('view') === 'runs' ? 'runs' : 'rows',
+  );
+  const [runId, setRunId] = useState(searchParams.get('runId') || '');
   const [modelName, setModelName] = useState(searchParams.get('modelName') || '');
   const [status, setStatus] = useState(searchParams.get('status') || '');
   const [startTime, setStartTime] = useState(searchParams.get('startTime') || '');
@@ -214,6 +220,7 @@ export default function ProbeLogs() {
     if (siteId) params.set('siteId', siteId);
     if (accountId) params.set('accountId', accountId);
     if (tokenId) params.set('tokenId', tokenId);
+    if (runId) params.set('runId', runId);
     if (modelName) params.set('modelName', modelName);
     if (status) params.set('status', status);
     if (startTime) params.set('startTime', new Date(startTime).toISOString());
@@ -221,8 +228,7 @@ export default function ProbeLogs() {
     params.set('limit', pageSize.toString());
     params.set('offset', ((page - 1) * pageSize).toString());
     return params.toString();
-  }, [siteId, accountId, tokenId, modelName, status, startTime, endTime, page, pageSize]);
-
+  }, [siteId, accountId, tokenId, runId, modelName, status, startTime, endTime, page, pageSize]);
   const logsQuery = useQuery({
     queryKey: ['probe-logs', logsParams],
     queryFn: () => api.getProbeLogs(logsParams),
@@ -251,6 +257,25 @@ export default function ProbeLogs() {
   const stats = statsQuery.data ?? null;
   const loading = logsQuery.isFetching;
 
+  const runsParams = useMemo(() => {
+    const params = new URLSearchParams();
+    if (siteId) params.set('siteId', siteId);
+    if (accountId) params.set('accountId', accountId);
+    if (tokenId) params.set('tokenId', tokenId);
+    if (startTime) params.set('startTime', new Date(startTime).toISOString());
+    if (endTime) params.set('endTime', new Date(endTime).toISOString());
+    params.set('limit', '50');
+    return params.toString();
+  }, [siteId, accountId, tokenId, startTime, endTime]);
+  const runsQuery = useQuery({
+    queryKey: ['probe-log-runs', runsParams],
+    queryFn: () => api.getProbeLogRuns(runsParams),
+    enabled: viewMode === 'runs',
+    placeholderData: keepPreviousData,
+    retry: false,
+  });
+  const runs = runsQuery.data?.runs ?? [];
+
   useEffect(() => {
     if (logsQuery.isError) toast.error(tr('获取测活日志失败'));
   }, [logsQuery.isError, logsQuery.errorUpdatedAt]);
@@ -265,7 +290,7 @@ export default function ProbeLogs() {
     setSearchParams(newParams);
   };
 
-  const hasActiveFilters = Boolean(siteId || accountId || tokenId || modelName || status || startTime || endTime || page !== 1);
+  const hasActiveFilters = Boolean(siteId || accountId || tokenId || runId || modelName || status || startTime || endTime || page !== 1);
 
   // 一次性清除所有筛选参数并回到第一页。
   const resetFilters = () => {
@@ -353,6 +378,95 @@ export default function ProbeLogs() {
           </div>
         </div>
       )}
+
+      {/* 探测批次：一次探测会写入成百上千行，先看批次再看单次尝试 */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            style={{ border: '1px solid var(--color-border)', padding: '6px 12px' }}
+            onClick={() => setViewMode(viewMode === 'runs' ? 'rows' : 'runs')}
+          >
+            {viewMode === 'runs' ? tr('收起探测批次') : tr('探测批次（历次记录）')}
+          </button>
+          {runId ? (
+            <span className="badge badge-muted" style={{ fontSize: 11 }}>
+              {`${tr('仅看批次')} ${runId}`}
+              <button
+                type="button"
+                className="btn btn-link"
+                style={{ marginLeft: 6, fontSize: 11 }}
+                onClick={() => { setRunId(''); updateSearchParams('runId', ''); setPage(1); }}
+              >
+                {tr('清除')}
+              </button>
+            </span>
+          ) : null}
+        </div>
+        {viewMode === 'runs' ? (
+          <div style={{ marginTop: 8, overflowX: 'auto' }}>
+            <table className="data-table probe-logs-table">
+              <thead>
+                <tr>
+                  <th>{tr('批次')}</th>
+                  <th>{tr('开始时间')}</th>
+                  <th>{tr('站点')}</th>
+                  <th>{tr('账号数')}</th>
+                  <th>{tr('令牌数')}</th>
+                  <th>{tr('模型数')}</th>
+                  <th>{tr('探测数')}</th>
+                  <th>{tr('成功')}</th>
+                  <th>{tr('失败')}</th>
+                  <th>{tr('消耗额度')}</th>
+                  <th>{tr('明细')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.length === 0 ? (
+                  <tr>
+                    <td colSpan={11} style={{ color: 'var(--color-text-muted)', fontSize: 12 }}>
+                      {runsQuery.isFetching ? tr('加载中...') : tr('暂无批次记录（旧数据没有批次号）')}
+                    </td>
+                  </tr>
+                ) : runs.map((run) => (
+                  <tr key={run.runId}>
+                    <td style={{ fontSize: 11, fontFamily: 'var(--font-mono)' }}>{run.runId}</td>
+                    <td style={{ whiteSpace: 'nowrap', fontSize: 12 }}>{fmtDateTime(run.startedAt)}</td>
+                    <td style={{ fontSize: 12 }}>{run.siteName || `#${run.siteId}`}</td>
+                    <td style={{ fontSize: 12 }}>{run.accountCount}</td>
+                    <td style={{ fontSize: 12 }}>{run.tokenCount}</td>
+                    <td style={{ fontSize: 12 }}>{run.modelCount}</td>
+                    <td style={{ fontSize: 12 }}>{run.probed}</td>
+                    <td style={{ fontSize: 12, color: 'var(--color-success)' }}>{run.success}</td>
+                    <td style={{ fontSize: 12, color: 'var(--color-danger)' }}>
+                      {Number(run.failed) + Number(run.timeout)}
+                    </td>
+                    <td style={{ fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                      {`$${Number(run.totalCost || 0).toFixed(6)}`}
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className="btn btn-link btn-link-primary"
+                        style={{ fontSize: 12 }}
+                        onClick={() => {
+                          setRunId(run.runId);
+                          updateSearchParams('runId', run.runId);
+                          setPage(1);
+                          setViewMode('rows');
+                        }}
+                      >
+                        {tr('查看')}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
 
       <ResponsiveFilterPanel
         isMobile={isMobile}

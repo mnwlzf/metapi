@@ -985,6 +985,28 @@ export const api = {
       limit: number;
       offset: number;
     }>,
+  /** Probe runs (batches): one row per `run_id` with counts and spend. */
+  getProbeLogRuns: (params?: string) =>
+    request(`/api/probe-logs/runs${params ? `?${params}` : ''}`) as Promise<{
+      runs: Array<{
+        runId: string;
+        siteId: number;
+        siteName: string | null;
+        probed: number;
+        success: number;
+        failed: number;
+        timeout: number;
+        modelCount: number;
+        tokenCount: number;
+        accountCount: number;
+        totalCost: number;
+        totalTokens: number;
+        startedAt: string;
+        finishedAt: string;
+      }>;
+      limit: number;
+      offset: number;
+    }>,
   getProbeLogStats: (params?: string) =>
     request(`/api/probe-logs/stats${params ? `?${params}` : ''}`) as Promise<{
       total: number;

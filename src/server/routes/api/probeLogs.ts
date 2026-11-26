@@ -248,6 +248,82 @@ export async function registerProbeLogsRoutes(app: FastifyInstance) {
     };
   });
 
+  /**
+   * Probe runs (batches).
+   *
+   * One click on "probe all" writes hundreds of rows; a flat list cannot answer
+   * "what did the last run do, and what did it cost". Each row here is one
+   * `run_id` with its counts and spend, newest first, so the log page can show a
+   * batch view and drill into a single run.
+   */
+  app.get('/api/probe-logs/runs', async (request, _reply) => {
+    const {
+      siteId,
+      accountId,
+      tokenId,
+      startTime,
+      endTime,
+      limit = 50,
+      offset = 0,
+    } = request.query as {
+      siteId?: string;
+      accountId?: string;
+      tokenId?: string;
+      startTime?: string;
+      endTime?: string;
+      limit?: string;
+      offset?: string;
+    };
+
+    const conditions: any[] = [sql`${probeLogs.runId} is not null`];
+
+    if (siteId) {
+      const parsed = parseInt(siteId, 10);
+      if (Number.isFinite(parsed) && parsed > 0) conditions.push(eq(probeLogs.siteId, parsed));
+    }
+    if (accountId) {
+      const parsed = parseInt(accountId, 10);
+      if (Number.isFinite(parsed) && parsed > 0) conditions.push(eq(probeLogs.accountId, parsed));
+    }
+    if (tokenId) {
+      const parsed = parseInt(tokenId, 10);
+      if (Number.isFinite(parsed) && parsed > 0) conditions.push(eq(probeLogs.tokenId, parsed));
+    }
+    if (startTime) conditions.push(gte(probeLogs.createdAt, startTime));
+    if (endTime) conditions.push(lte(probeLogs.createdAt, endTime));
+
+    const whereClause = and(...conditions);
+    const limitNum = normalizePageSize(limit, 50, 200);
+    const offsetNum = normalizePageOffset(offset);
+
+    const rows = await db
+      .select({
+        runId: probeLogs.runId,
+        siteId: probeLogs.siteId,
+        siteName: sites.name,
+        probed: sql<number>`count(*)`,
+        success: sql<number>`sum(case when ${probeLogs.status} = 'success' then 1 else 0 end)`,
+        failed: sql<number>`sum(case when ${probeLogs.status} = 'failed' then 1 else 0 end)`,
+        timeout: sql<number>`sum(case when ${probeLogs.status} = 'timeout' then 1 else 0 end)`,
+        modelCount: sql<number>`count(distinct ${probeLogs.modelName})`,
+        tokenCount: sql<number>`count(distinct ${probeLogs.tokenId})`,
+        accountCount: sql<number>`count(distinct ${probeLogs.accountId})`,
+        totalCost: sql<number>`coalesce(sum(${probeLogs.estimatedCost}), 0)`,
+        totalTokens: sql<number>`coalesce(sum(${probeLogs.tokensUsed}), 0)`,
+        startedAt: sql<unknown>`min(${probeLogs.createdAt})`,
+        finishedAt: sql<unknown>`max(${probeLogs.createdAt})`,
+      })
+      .from(probeLogs)
+      .leftJoin(sites, eq(probeLogs.siteId, sites.id))
+      .where(whereClause)
+      .groupBy(probeLogs.runId, probeLogs.siteId, sites.name)
+      .orderBy(desc(sql`max(${probeLogs.createdAt})`))
+      .limit(limitNum)
+      .offset(offsetNum);
+
+    return { runs: rows, limit: limitNum, offset: offsetNum };
+  });
+
   // 获取单个测活日志详情（放在静态路由之后，避免 /filters、/stats 被 :id 吞掉）
   app.get('/api/probe-logs/:id', async (request, reply) => {
     const { id } = request.params as { id: string };

@@ -343,6 +343,8 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
   const [syncing, setSyncing] = useState(false);
   const [syncingAll, setSyncingAll] = useState(false);
   const [refreshingGroups, setRefreshingGroups] = useState(false);
+  const [fillingMissingGroups, setFillingMissingGroups] = useState(false);
+  const [fillProgress, setFillProgress] = useState('');
   /**
    * Clock used only to re-evaluate how old a rendered multiplier is. The page may
    * stay open long after its catalog was read; without a tick the "possibly
@@ -1026,6 +1028,76 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
     }
   }, [load, toast]);
 
+  /**
+   * Create one token for every upstream group that has none yet.
+   *
+   * The single-token form stays exactly as it was (validation and quota rules
+   * included); this only drives the same create API repeatedly for the groups the
+   * picker already marks "未创建令牌", so topping up a wide account is one click
+   * instead of N.
+   */
+  const handleFillMissingGroups = useCallback(async () => {
+    if (!form.accountId) return;
+    const missing = (groupOptions.length > 0 ? groupOptions : ['default'])
+      .filter((group) => !addAccountExistingGroups.has(group));
+    if (missing.length === 0) return;
+    if (!form.unlimitedQuota) {
+      const parsed = Number.parseInt(form.remainQuota, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        toast.error(tr('有限额度令牌请填写正整数额度'));
+        return;
+      }
+    }
+    const remainQuota = form.unlimitedQuota ? undefined : Number.parseInt(form.remainQuota, 10);
+
+    setFillingMissingGroups(true);
+    let created = 0;
+    let failed = 0;
+    try {
+      for (const [index, group] of missing.entries()) {
+        if (!form.accountId) break;
+        setFillProgress(`${index + 1}/${missing.length}`);
+        const detail = findGroupDetail(groupCatalog, group);
+        try {
+          await api.addAccountToken({
+            accountId: form.accountId,
+            // Name mirrors the group so a bulk fill leaves a readable list
+            // instead of a row of bare ids.
+            name: detail?.name || `分组 ${group}`,
+            group,
+            unlimitedQuota: form.unlimitedQuota,
+            remainQuota,
+            expiredTime: form.expiredTime || undefined,
+            allowIps: form.allowIps,
+          });
+          created += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      await load();
+      if (failed === 0) {
+        toast.success(`${tr('已补齐')} ${created} ${tr('个分组的令牌')}`);
+      } else {
+        toast.info(`${tr('已补齐')} ${created} ${tr('个')}，${failed} ${tr('个失败')}`);
+      }
+    } finally {
+      setFillProgress('');
+      setFillingMissingGroups(false);
+    }
+  }, [
+    addAccountExistingGroups,
+    form.accountId,
+    form.allowIps,
+    form.expiredTime,
+    form.remainQuota,
+    form.unlimitedQuota,
+    groupCatalog,
+    groupOptions,
+    load,
+    toast,
+  ]);
+
   const handleSyncSite = useCallback(async () => {
     if (activeAccounts.length === 0) return;
     setSyncingAll(true);
@@ -1469,6 +1541,17 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
             {form.accountId && !groupLoading && addGroupCoverage.pending > 0 ? (
               <div style={{ fontSize: 11, color: 'var(--color-warning)', marginTop: 4 }}>
                 {`${tr('共')} ${addGroupCoverage.total} ${tr('个分组')}，${addGroupCoverage.pending} ${tr('个还没有令牌')}`}
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  style={{ marginLeft: 8, fontSize: 11, padding: '0 6px' }}
+                  disabled={fillingMissingGroups || saving}
+                  onClick={() => { void handleFillMissingGroups(); }}
+                >
+                  {fillingMissingGroups
+                    ? <><span className="spinner spinner-sm" /> {fillProgress || tr('补齐中...')}</>
+                    : `${tr('一键补齐')} ${addGroupCoverage.pending} ${tr('个')}`}
+                </button>
               </div>
             ) : null}
           </div>
