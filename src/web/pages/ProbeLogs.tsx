@@ -44,7 +44,12 @@ type ProbeLog = {
 };
 
 const EMPTY_LOGS: ProbeLog[] = [];
-const EMPTY_FILTER_OPTIONS = { sites: [], accounts: [], models: [] };
+const EMPTY_FILTER_OPTIONS = {
+  sites: [],
+  accounts: [],
+  tokens: [] as { id: number; name: string; group: string | null; accountId: number | null }[],
+  models: [],
+};
 
 const CATEGORY_LABELS: Record<string, string> = {
   math: tr('数学'),
@@ -154,6 +159,7 @@ export default function ProbeLogs() {
   // 过滤条件
   const [siteId, setSiteId] = useState(searchParams.get('siteId') || '');
   const [accountId, setAccountId] = useState(searchParams.get('accountId') || '');
+  const [tokenId, setTokenId] = useState(searchParams.get('tokenId') || '');
   const [modelName, setModelName] = useState(searchParams.get('modelName') || '');
   const [status, setStatus] = useState(searchParams.get('status') || '');
   const [startTime, setStartTime] = useState(searchParams.get('startTime') || '');
@@ -184,6 +190,17 @@ export default function ProbeLogs() {
     return [{ value: '', label: tr('全部账号') }, ...opts];
   }, [filterOptions.accounts, accountId]);
 
+  const tokenOptions = useMemo(() => {
+    const opts = filterOptions.tokens.map((t) => ({
+      value: String(t.id),
+      label: t.group ? `${t.name} · #${t.group}` : t.name,
+    }));
+    if (tokenId && !opts.some((o) => o.value === tokenId)) {
+      opts.unshift({ value: tokenId, label: `令牌 #${tokenId}` });
+    }
+    return [{ value: '', label: tr('全部令牌') }, ...opts];
+  }, [filterOptions.tokens, tokenId]);
+
   const modelOptions = useMemo(() => {
     const opts = filterOptions.models.map((m) => ({ value: m, label: m }));
     if (modelName && !opts.some((o) => o.value === modelName)) {
@@ -196,6 +213,7 @@ export default function ProbeLogs() {
     const params = new URLSearchParams();
     if (siteId) params.set('siteId', siteId);
     if (accountId) params.set('accountId', accountId);
+    if (tokenId) params.set('tokenId', tokenId);
     if (modelName) params.set('modelName', modelName);
     if (status) params.set('status', status);
     if (startTime) params.set('startTime', new Date(startTime).toISOString());
@@ -203,7 +221,7 @@ export default function ProbeLogs() {
     params.set('limit', pageSize.toString());
     params.set('offset', ((page - 1) * pageSize).toString());
     return params.toString();
-  }, [siteId, accountId, modelName, status, startTime, endTime, page, pageSize]);
+  }, [siteId, accountId, tokenId, modelName, status, startTime, endTime, page, pageSize]);
 
   const logsQuery = useQuery({
     queryKey: ['probe-logs', logsParams],
@@ -247,13 +265,14 @@ export default function ProbeLogs() {
     setSearchParams(newParams);
   };
 
-  const hasActiveFilters = Boolean(siteId || accountId || modelName || status || startTime || endTime || page !== 1);
+  const hasActiveFilters = Boolean(siteId || accountId || tokenId || modelName || status || startTime || endTime || page !== 1);
 
   // 一次性清除所有筛选参数并回到第一页。
   const resetFilters = () => {
     if (!hasActiveFilters) return;
     setSiteId('');
     setAccountId('');
+    setTokenId('');
     setModelName('');
     setStatus('');
     setStartTime('');
@@ -381,6 +400,14 @@ export default function ProbeLogs() {
               searchable
             />
             <ModernSelect
+              value={tokenId}
+              onChange={(v) => { setTokenId(v); setPage(1); updateSearchParams('tokenId', v); }}
+              options={tokenOptions}
+              placeholder={tr('令牌')}
+              size="sm"
+              searchable
+            />
+            <ModernSelect
               value={modelName}
               onChange={(v) => { setModelName(v); setPage(1); updateSearchParams('modelName', v); }}
               options={modelOptions}
@@ -443,6 +470,17 @@ export default function ProbeLogs() {
                 onChange={(v) => { setAccountId(v); setPage(1); updateSearchParams('accountId', v); }}
                 options={accountOptions}
                 placeholder={tr('全部账号')}
+                size="sm"
+                searchable
+              />
+            </div>
+            <div className="probe-filter-select">
+              <span>{tr('令牌 ID')}</span>
+              <ModernSelect
+                value={tokenId}
+                onChange={(v) => { setTokenId(v); setPage(1); updateSearchParams('tokenId', v); }}
+                options={tokenOptions}
+                placeholder={tr('全部令牌')}
                 size="sm"
                 searchable
               />
