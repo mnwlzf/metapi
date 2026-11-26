@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { applyNewModelPolicyForAccount } from './accountNewModelPolicy.js';
 import { getInsertedRowId } from '../db/insertHelpers.js';
@@ -351,8 +351,38 @@ export type ProbeSiteModelsOptions = {
   tokenId?: number | null;
   /** Ignore the per-cell cooldown, e.g. right after editing a key. */
   force?: boolean;
-  trigger?: 'manual' | 'post-refresh';
+  trigger?: 'manual' | 'post-refresh' | 'scheduled';
+  /** Select only cells whose usage-based probe interval has elapsed. */
+  scheduled?: boolean;
+  /** Internal cap when a scheduler shares one budget across multiple sites. */
+  maxCells?: number;
 };
+
+const PROBE_CADENCE_MS = {
+  high: 60 * 60_000,
+  medium: 6 * 60 * 60_000,
+  low: 24 * 60 * 60_000,
+  veryLow: 72 * 60 * 60_000,
+} as const;
+const PROBE_USAGE_WINDOW_MS = 7 * 24 * 60 * 60_000;
+// The scheduler polls every five minutes, but spends at most one billable probe
+// per tick (12/hour globally). This is a hard cost ceiling even when a large
+// catalog has many newly discovered cells due at once.
+const PROBE_SCHEDULED_MAX_CELLS = 1;
+const probeCellsInFlight = new Set<string>();
+let scheduledSiteCursor = 0;
+const scheduledCellCursorBySite = new Map<number, string>();
+
+function getProbeCellKey(cell: ProbeCell): string {
+  return `${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`;
+}
+
+function resolveProbeCadence(modelName: string, callsInWindow: number): number {
+  if (/image|imagen|dall[-_]?e|flux|stable[-_]?diffusion/i.test(modelName)) return PROBE_CADENCE_MS.veryLow;
+  if (callsInWindow >= 50) return PROBE_CADENCE_MS.high;
+  if (callsInWindow >= 5) return PROBE_CADENCE_MS.medium;
+  return PROBE_CADENCE_MS.low;
+}
 
 /**
  * Probe cadence control.
@@ -589,10 +619,11 @@ async function loadRecentProbeTimes(accountIds: number[]): Promise<Map<string, n
     accountId: schema.probeLogs.accountId,
     tokenId: schema.probeLogs.tokenId,
     modelName: schema.probeLogs.modelName,
-    createdAt: schema.probeLogs.createdAt,
+    createdAt: sql<string>`max(${schema.probeLogs.createdAt})`,
   })
     .from(schema.probeLogs)
     .where(inArray(schema.probeLogs.accountId, accountIds))
+    .groupBy(schema.probeLogs.accountId, schema.probeLogs.tokenId, schema.probeLogs.modelName)
     .all();
   for (const row of rows) {
     const parsed = parseProbeLogTimeMs(row.createdAt);
@@ -601,6 +632,42 @@ async function loadRecentProbeTimes(accountIds: number[]): Promise<Map<string, n
     if (parsed > (result.get(key) ?? 0)) result.set(key, parsed);
   }
   return result;
+}
+
+async function loadRecentProxyUsage(accountIds: number[]): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (!accountIds.length) return counts;
+  const cutoff = new Date(Date.now() - PROBE_USAGE_WINDOW_MS).toISOString();
+  const rows = await db.select({
+    accountId: schema.proxyLogs.accountId,
+    tokenId: schema.proxyLogs.tokenId,
+    modelRequested: schema.proxyLogs.modelRequested,
+    modelActual: schema.proxyLogs.modelActual,
+    calls: sql<number>`count(*)`,
+  }).from(schema.proxyLogs).where(and(
+    inArray(schema.proxyLogs.accountId, accountIds),
+    gte(schema.proxyLogs.createdAt, cutoff),
+  )).groupBy(
+    schema.proxyLogs.accountId,
+    schema.proxyLogs.tokenId,
+    schema.proxyLogs.modelRequested,
+    schema.proxyLogs.modelActual,
+  ).all();
+  for (const row of rows) {
+    if (row.accountId == null) continue;
+    // Count demand against both the caller's requested alias and the actual
+    // routed model. Discovery names commonly differ from the model the relay
+    // reports back, and using only one side made hot aliases look cold.
+    const modelNames = new Set([
+      String(row.modelRequested || '').trim().toLowerCase(),
+      String(row.modelActual || '').trim().toLowerCase(),
+    ].filter(Boolean));
+    for (const model of modelNames) {
+      const key = `${row.accountId}:${row.tokenId ?? 0}:${model}`;
+      counts.set(key, (counts.get(key) ?? 0) + Number(row.calls || 0));
+    }
+  }
+  return counts;
 }
 
 /** Record "this key serves this model" on the table routing actually reads. */
@@ -654,6 +721,38 @@ async function markCellUnavailable(cell: ProbeCell): Promise<void> {
       eq(schema.tokenModelAvailability.modelName, cell.modelName),
     ))
     .run();
+}
+
+/** Models without a chat probe protocol rely on the upstream model catalog. */
+async function markCellCatalogAvailable(cell: ProbeCell): Promise<boolean> {
+  const checkedAt = new Date().toISOString();
+  if (cell.tokenId === 0) {
+    const previous = await db.select().from(schema.modelAvailability)
+      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
+        eq(schema.modelAvailability.modelName, cell.modelName))).get();
+    await db.update(schema.modelAvailability)
+      .set({ available: true, connectivity: null, checkedAt })
+      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
+        eq(schema.modelAvailability.modelName, cell.modelName))).run();
+    return previous?.available !== true;
+  }
+  const previous = await db.select().from(schema.tokenModelAvailability)
+    .where(and(eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
+      eq(schema.tokenModelAvailability.modelName, cell.modelName))).get();
+  if (!previous) {
+    await db.insert(schema.tokenModelAvailability).values({
+      tokenId: cell.tokenId,
+      modelName: cell.modelName,
+      available: true,
+      connectivity: null,
+      checkedAt,
+    }).onConflictDoNothing().run();
+  }
+  await db.update(schema.tokenModelAvailability)
+    .set({ available: true, connectivity: null, checkedAt })
+    .where(and(eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
+      eq(schema.tokenModelAvailability.modelName, cell.modelName))).run();
+  return previous?.available !== true;
 }
 
 export async function probeSiteModels(
@@ -736,8 +835,36 @@ export async function probeSiteModels(
     const last = recent.get(`${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`) ?? 0;
     return last > 0 && nowMs - last < cooldownMs;
   };
-  const skippedByCooldown = built.cells.filter(withinCooldown).length;
-  const cells = built.cells.filter((cell) => !withinCooldown(cell)).slice(0, maxCells);
+  const usage = options?.scheduled
+    ? await loadRecentProxyUsage(Array.from(new Set(built.cells.map((cell) => cell.account.id))))
+    : new Map<string, number>();
+  const dueBySchedule = (cell: ProbeCell): boolean => {
+    if (!options?.scheduled) return true;
+    const key = `${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`;
+    const last = recent.get(key) ?? 0;
+    const count = usage.get(key) ?? 0;
+    return !last || nowMs - last >= resolveProbeCadence(cell.modelName, count);
+  };
+  const skippedByCooldown = built.cells.filter((cell) => withinCooldown(cell) || !dueBySchedule(cell)).length;
+  const cellLimit = options?.maxCells && options.maxCells > 0
+    ? Math.min(maxCells, Math.trunc(options.maxCells))
+    : options?.scheduled ? Math.min(maxCells, PROBE_SCHEDULED_MAX_CELLS) : maxCells;
+  const eligibleCells = built.cells.filter((cell) => !withinCooldown(cell)
+    && dueBySchedule(cell)
+    && !probeCellsInFlight.has(getProbeCellKey(cell)));
+  if (options?.trigger === 'scheduled' && eligibleCells.length > 1) {
+    const previousKey = scheduledCellCursorBySite.get(site.id);
+    const previousIndex = previousKey
+      ? eligibleCells.findIndex((cell) => getProbeCellKey(cell) === previousKey)
+      : -1;
+    if (previousIndex >= 0) {
+      eligibleCells.push(...eligibleCells.splice(0, previousIndex + 1));
+    }
+  }
+  const cells = eligibleCells.slice(0, cellLimit);
+  if (options?.trigger === 'scheduled' && cells.length > 0) {
+    scheduledCellCursorBySite.set(site.id, getProbeCellKey(cells[cells.length - 1]!));
+  }
 
   onProgress?.({
     type: 'start',
@@ -834,7 +961,24 @@ export async function probeSiteModels(
         ? { type: 'model', modelName: cell.modelName, status, latencyMs: result.latencyMs, latencyExceeded: true, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup }
         : { type: 'model', modelName: cell.modelName, status, latencyMs: result.latencyMs, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
 
-      if (status === 'skipped') continue;
+      if (status === 'skipped') {
+        // Audio and other endpoints without a specialized probe rely on the
+        // upstream model catalog; keep connectivity unknown and preserve routing.
+        if (result.reason === 'skipped non-conversation model probe'
+          && await markCellCatalogAvailable(cell)) {
+          routeRebuildNeeded = true;
+        }
+        if (result.reason === 'skipped non-conversation model probe') {
+          const recovered = await clearAutoDisabledModels({
+            siteId: site.id,
+            accountId: cell.account.id,
+            tokenId: cell.tokenId,
+            modelNames: [cell.modelName],
+          });
+          if (recovered.length > 0) routeRebuildNeeded = true;
+        }
+        continue;
+      }
 
       if (status === 'supported') {
         supportedCount += 1;
@@ -865,28 +1009,35 @@ export async function probeSiteModels(
 
       if (status === 'unsupported') unsupportedCount += 1;
       else inconclusiveCount += 1;
-      await markCellUnavailable(cell);
-      const inserted = await db.insert(schema.siteDisabledModels)
-        .values({
-          siteId: site.id,
-          accountId: cell.account.id,
-          tokenId: cell.tokenId,
-          modelName: cell.modelName,
-          source: 'probe',
-        })
-        .onConflictDoNothing()
-        .run();
-      if (Number((inserted as { changes?: number | bigint } | undefined)?.changes ?? 0) > 0) {
-        routeRebuildNeeded = true;
-        onProgress?.({ type: 'action', modelName: cell.modelName, action: 'disabled', tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+      if (status === 'unsupported') {
+        await markCellUnavailable(cell);
+        const inserted = await db.insert(schema.siteDisabledModels)
+          .values({
+            siteId: site.id,
+            accountId: cell.account.id,
+            tokenId: cell.tokenId,
+            modelName: cell.modelName,
+            source: 'probe',
+          })
+          .onConflictDoNothing()
+          .run();
+        if (Number((inserted as { changes?: number | bigint } | undefined)?.changes ?? 0) > 0) {
+          routeRebuildNeeded = true;
+          onProgress?.({ type: 'action', modelName: cell.modelName, action: 'disabled', tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
+        }
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(concurrency, cells.length) }, worker));
+  for (const cell of cells) probeCellsInFlight.add(getProbeCellKey(cell));
+  try {
+    await Promise.all(Array.from({ length: Math.min(concurrency, cells.length) }, worker));
+  } finally {
+    for (const cell of cells) probeCellsInFlight.delete(getProbeCellKey(cell));
+  }
 
   // One rebuild for the whole run: rebuilding per cell thrashes the route tables
   // and, on a wide account, costs more time than the probing itself.
-  clearModelsMarketplaceCache();
+  if (details.length > 0) clearModelsMarketplaceCache();
   if (routeRebuildNeeded && !options?.signal?.aborted) {
     invalidateTokenRouterCache();
     await rebuildTokenRoutesFromAvailability().catch((err) => {
@@ -894,9 +1045,9 @@ export async function probeSiteModels(
     });
   }
 
-  if (unsupportedCount + inconclusiveCount > 0) {
-    const failed = unsupportedCount + inconclusiveCount;
-    const sample = details.filter((detail) => detail.status === 'unsupported' || detail.status === 'inconclusive').slice(0, 3);
+  if (unsupportedCount > 0) {
+    const failed = unsupportedCount;
+    const sample = details.filter((detail) => detail.status === 'unsupported').slice(0, 3);
     await setAccountRuntimeHealth(cells[0]!.account.id, {
       state: 'unhealthy',
       reason: `探测未通过：${failed} 个单元未确认可用（${sample.map((detail) => detail.modelName).join('、')}${failed > 3 ? '…' : ''}）`,
@@ -927,6 +1078,53 @@ export async function probeSiteModels(
   };
 }
 
+let scheduledProbePass: Promise<void> | null = null;
+
+/** Run a small due-only probe batch per active site. */
+export function runScheduledModelProbeBatch(): Promise<void> {
+  if (scheduledProbePass) return scheduledProbePass;
+  const pass = (async () => {
+    const sites = await db.select({ id: schema.sites.id })
+      .from(schema.sites)
+      .where(eq(schema.sites.status, 'active'))
+      .all();
+    let remainingCells = PROBE_SCHEDULED_MAX_CELLS;
+    if (sites.length === 0) {
+      scheduledSiteCursor = 0;
+      return;
+    }
+    const startAt = scheduledSiteCursor % sites.length;
+    for (let offset = 0; offset < sites.length; offset += 1) {
+      if (remainingCells <= 0) break;
+      const siteIndex = (startAt + offset) % sites.length;
+      const site = sites[siteIndex]!;
+      try {
+        const result = await probeSiteModels(site.id, {
+          scope: 'all',
+          scheduled: true,
+          maxCells: remainingCells,
+          trigger: 'scheduled',
+          concurrency: 2,
+        });
+        remainingCells -= result.probed;
+        if (result.probed > 0) {
+          console.log(`[Scheduler] Model probe site=${site.id} probed=${result.probed} supported=${result.supported} unsupported=${result.unsupported} inconclusive=${result.inconclusive}`);
+          // The next scheduler tick starts at the following site, preventing a
+          // busy first site from starving every site after it.
+          scheduledSiteCursor = (siteIndex + 1) % sites.length;
+        }
+      } catch (error) {
+        console.warn(`[Scheduler] Model probe failed for site ${site.id}:`, error);
+      }
+    }
+    if (remainingCells > 0) scheduledSiteCursor = (startAt + 1) % sites.length;
+  })().finally(() => {
+    if (scheduledProbePass === pass) scheduledProbePass = null;
+  });
+  scheduledProbePass = pass;
+  return pass;
+}
+
 async function runPostRefreshProbeIfEnabled(params: {
   account: typeof schema.accounts.$inferSelect;
   site: typeof schema.sites.$inferSelect;
@@ -939,11 +1137,14 @@ async function runPostRefreshProbeIfEnabled(params: {
   // knows which models each key advertises, and re-deriving that here is how the
   // two paths drifted apart (this one used to write account-wide verdicts).
   const result = await probeSiteModels(params.site.id, {
+    // Keep the legacy opt-in switch, but use the same due-only batch policy as
+    // the scheduler. A catalog refresh must not trigger an immediate full sweep.
     scope: params.site.postRefreshProbeScope === 'all' ? 'all' : 'single',
     modelName: params.site.postRefreshProbeScope === 'all'
       ? undefined
       : (params.site.postRefreshProbeModel || params.discoveredModels[0]),
     latencyThresholdMs: params.site.postRefreshProbeLatencyThresholdMs ?? 0,
+    scheduled: true,
     trigger: 'post-refresh',
   });
   if (!result.success) return undefined;
@@ -1112,6 +1313,12 @@ async function doRefreshModelsForAccount(
   // the skip paths above must not leave the account with zero models (and
   // therefore zero routes) until the next full pass.
   const previousAvailability = await snapshotAvailability();
+  const previousAccountAvailability = new Map<string, typeof previousAvailability.models[number]>(previousAvailability.models.map((row: any) => [
+    String(row.modelName).toLowerCase(), row,
+  ] as [string, typeof previousAvailability.models[number]]));
+  const previousTokenAvailability = new Map<string, typeof previousAvailability.tokens[number]>(previousAvailability.tokens.map((row: any) => [
+    `${row.tokenId}:${String(row.modelName).toLowerCase()}`, row,
+  ] as [string, typeof previousAvailability.tokens[number]]));
   await clearExistingAvailability();
 
   if (!adapter) {
@@ -1321,7 +1528,12 @@ async function doRefreshModelsForAccount(
       models.map((modelName) => ({
         tokenId: token.id,
         modelName,
-        available: true,
+        // A newly discovered model is catalogued immediately, but it must pass
+        // its first active probe before it can enter routing. Existing verdicts
+        // survive metadata refreshes so a transient discovery refresh does not
+        // take healthy channels offline.
+        available: previousTokenAvailability.get(`${token.id}:${modelName.toLowerCase()}`)?.available ?? false,
+        connectivity: previousTokenAvailability.get(`${token.id}:${modelName.toLowerCase()}`)?.connectivity ?? null,
         latencyMs,
         checkedAt,
       })),
@@ -1383,7 +1595,8 @@ async function doRefreshModelsForAccount(
       newAccountModels.map((modelName) => ({
         accountId: account.id,
         modelName,
-        available: true,
+        available: previousAccountAvailability.get(modelName.toLowerCase())?.available ?? false,
+        connectivity: previousAccountAvailability.get(modelName.toLowerCase())?.connectivity ?? null,
         latencyMs: modelLatency.get(modelName.toLowerCase()) ?? null,
         checkedAt,
       })),

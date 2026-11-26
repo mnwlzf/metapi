@@ -8,6 +8,7 @@ const validateMock = vi.fn(() => true);
 const allMock = vi.fn();
 const refreshAllBalancesMock = vi.fn();
 const refreshModelsAndRebuildRoutesMock = vi.fn();
+const runScheduledModelProbeBatchMock = vi.fn(async () => undefined);
 const schedulerBoundMock = vi.fn(async (...args: any[]): Promise<{ completed: boolean; result?: any }> => ({
   completed: true,
   result: await (refreshModelsAndRebuildRoutesMock as any)(...args),
@@ -82,6 +83,10 @@ vi.mock('./routeRefreshWorkflow.js', () => ({
   refreshModelsAndRebuildRoutes: (...args: unknown[]) => refreshModelsAndRebuildRoutesMock(...args),
 }));
 
+vi.mock('./modelService.js', () => ({
+  runScheduledModelProbeBatch: (...args: unknown[]) => runScheduledModelProbeBatchMock(...args),
+}));
+
 vi.mock('./modelPriceCatalogService.js', () => ({
   startModelsDevPriceSync: (...args: unknown[]) => startModelsDevPriceSyncMock(...args),
   stopModelsDevPriceSync: (...args: unknown[]) => stopModelsDevPriceSyncMock(...args),
@@ -99,6 +104,7 @@ describe('checkinScheduler', () => {
     validateMock.mockClear();
     allMock.mockReset();
     refreshAllBalancesMock.mockReset();
+    runScheduledModelProbeBatchMock.mockReset().mockResolvedValue(undefined);
     refreshModelsAndRebuildRoutesMock.mockReset();
     schedulerBoundMock.mockClear();
     attemptPlatformHttpSelfHealMock.mockClear();
@@ -209,13 +215,21 @@ describe('checkinScheduler', () => {
 
   it('stopScheduler tears down every timer this module owns', async () => {
     const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
     refreshAllBalancesMock.mockResolvedValue(undefined);
     refreshModelsAndRebuildRoutesMock.mockResolvedValue(undefined);
     const scheduler = await import('./checkinScheduler.js');
 
     await scheduler.startScheduler();
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 5 * 60_000);
+    const probePoll = setIntervalSpy.mock.calls.find(([, intervalMs]) => intervalMs === 5 * 60_000);
+    expect(probePoll).toBeDefined();
+    (probePoll![0] as () => void)();
+    await Promise.resolve();
+    expect(runScheduledModelProbeBatchMock).toHaveBeenCalledTimes(1);
     // startScheduler registers the check-in, balance, model-refresh,
-    // daily-summary and log-cleanup cron tasks plus the models.dev price sync.
+    // daily-summary and log-cleanup cron tasks plus model-probe polling and
+    // the models.dev price sync.
     const scheduledCount = scheduleMock.mock.calls.length;
     expect(scheduledCount).toBeGreaterThanOrEqual(5);
     expect(startModelsDevPriceSyncMock).toHaveBeenCalledTimes(1);

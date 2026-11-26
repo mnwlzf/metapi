@@ -1,3 +1,4 @@
+import { fetch } from 'undici';
 import { resolveChannelProxyUrl, withSiteRecordProxyRequestInit } from './siteProxy.js';
 import { dispatchRuntimeRequest } from './runtimeDispatch.js';
 import { requireSiteApiBaseUrl } from './siteApiEndpointService.js';
@@ -7,7 +8,7 @@ import {
   type UpstreamEndpoint,
 } from './upstreamEndpointRuntime.js';
 import { executeEndpointFlow, type BuiltEndpointRequest } from '../proxy-core/orchestration/endpointFlow.js';
-import { readRuntimeResponseText, type RuntimeResponse } from '../proxy-core/executors/types.js';
+import { MAX_JSON_UPSTREAM_BODY_TEXT_CHARS, readRuntimeResponseText, type RuntimeResponse } from '../proxy-core/executors/types.js';
 import {
   collectResponsesFinalPayloadFromSseText,
   looksLikeResponsesSseText,
@@ -56,12 +57,15 @@ export { isGroupScopedModelRejection } from './probeFailureClassification.js';
 
 const NON_CONVERSATION_MODEL_PATTERNS = [
   /(^|[-_/])embedding(s)?($|[-_/])/i,
+  /(^|[-_/])embed(ding)?($|[-_/])/i,
+  /(^|[-_/])(?:bge-(?!rerank)|gte-|e5-|voyage-)/i,
   /(^|[-_/])rerank($|[-_/])/i,
   /(^|[-_/])moderation($|[-_/])/i,
   /(^|[-_/])whisper($|[-_/])/i,
   /(^|[-_/])tts($|[-_/])/i,
   /(^|[-_/])transcribe|transcription/i,
   /(^|[-_/])dall-e($|[-_/])/i,
+  /(^|[-_/])image(s)?($|[-_/])/i,
   /(^|[-_/])imagen($|[-_/])/i,
   /(^|[-_/])veo($|[-_/])/i,
   /(^|[-_/])cogvideo($|[-_/])/i,
@@ -95,6 +99,16 @@ function isLikelyConversationModel(modelName: string): boolean {
   if (!normalized) return false;
   if (normalized.startsWith('__')) return false;
   return !NON_CONVERSATION_MODEL_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+type SpecializedProbeKind = 'image' | 'embedding' | 'rerank';
+
+function resolveSpecializedProbeKind(modelName: string): SpecializedProbeKind | null {
+  const normalized = String(modelName || '').trim();
+  if (/(^|[-_/])image(s)?($|[-_/])|dall[-_]?e|imagen|stable[-_]?diffusion|sdxl|flux|recraft|ideogram|playground/i.test(normalized)) return 'image';
+  if (/(^|[-_/])rerank(er)?($|[-_/])/i.test(normalized)) return 'rerank';
+  if (/(^|[-_/])embedding(s)?($|[-_/])|(^|[-_/])embed($|[-_/])|(^|[-_/])(?:bge-(?!rerank)|gte-|e5-|voyage-)/i.test(normalized)) return 'embedding';
+  return null;
 }
 
 /**
@@ -199,7 +213,7 @@ export function classifyProbeFailureReason(status: number, rawErrorText: string)
  * a normal conversation.
  */
 const PROBE_CONTEXT_PADDING = `
-Large language models are trained to predict the next token in a sequence from massive corpora of text, and they have become capable of answering questions, writing code, summarizing documents, and following detailed instructions. The Transformer architecture that underpins these models relies on self-attention, which lets every token in the input attend to every other token, so the model can build rich contextual representations regardless of distance. Pre-training on web text, books, and code gives the model broad world knowledge, while instruction tuning and preference optimization align its behavior with what users expect: clear, helpful, and well-structured answers. Inference servers expose this capability through OpenAI-compatible APIs, where a client sends a list of messages with roles such as system, user, and assistant, and the model generates a completion in response. System messages set the overall behavior and constraints for the conversation, user messages carry the actual request, and assistant messages hold prior model output. The generation process is autoregressive: the model produces one token at a time, feeding its own output back as input, until it reaches a stop condition or the configured token budget. Sampling parameters such as temperature and top-p control the randomness of the output, and max_tokens bounds the length of the completion. Streaming delivers partial tokens as they are generated using server-sent events, which improves perceived latency for long answers. For evaluation, a probe request sends a modest question and checks that the response is coherent and that token usage is reported, which confirms the endpoint is genuinely serving the model rather than returning an error or a stub. In practice, the same request format is used by thousands of applications, from simple chat widgets to complex agent pipelines that chain multiple model calls together, and the API contract stays stable regardless of the payload size or the model being invoked. Please answer the user message below clearly and completely, in the same language as the question, and include any reasoning steps that are relevant to the answer.
+Large language models are trained to predict the next token in a sequence from massive corpora of text, and they have become capable of answering questions, writing code, summarizing documents, and following detailed instructions. The Transformer architecture that underpins these models relies on self-attention, which lets every token in the input attend to every other token, so the model can build rich contextual representations regardless of distance. Pre-training on web text, books, and code gives the model broad world knowledge, while instruction tuning and preference optimization align its behavior with what users expect: clear, helpful, and well-structured answers. Inference servers expose this capability through OpenAI-compatible APIs, where a client sends a list of messages with roles such as system, user, and assistant, and the model generates a completion in response. System messages set the overall behavior and constraints for the conversation, user messages carry the actual request, and assistant messages hold prior model output. The generation process is autoregressive: the model produces one token at a time, feeding its own output back as input, until it reaches a stop condition or the configured token budget. Sampling parameters such as temperature and top-p control the randomness of the output, and max_tokens bounds the length of the completion. Streaming delivers partial tokens as they are generated using server-sent events, which improves perceived latency for long answers. For evaluation, a probe request sends a modest question and checks that the response is coherent and that token usage is reported, which confirms the endpoint is genuinely serving the model rather than returning an error or a stub. In practice, the same request format is used by thousands of applications, from simple chat widgets to complex agent pipelines that chain multiple model calls together, and the API contract stays stable regardless of the payload size or the model being invoked. Please answer briefly in the same language as the user, without step-by-step reasoning.
 `;
 
 export function buildRuntimeProbeChatBody(
@@ -718,6 +732,199 @@ function resolveRemainingTimeoutMs(deadlineAtMs: number, timeoutLabel: string): 
   return remainingMs;
 }
 
+function buildSpecializedProbeRequest(kind: SpecializedProbeKind, modelName: string): {
+  path: string;
+  body: Record<string, unknown>;
+  questionText: string;
+} {
+  if (kind === 'image') {
+    const isDallE2 = /dall[-_]?e[-_]?2/i.test(modelName);
+    const isGptImage = /gpt[-_]?image/i.test(modelName);
+    return {
+      path: '/v1/images/generations',
+      body: {
+        model: modelName,
+        prompt: 'Generate a simple blue dot on a plain white background.',
+        n: 1,
+        size: isDallE2 ? '256x256' : '1024x1024',
+        ...(isGptImage ? { quality: 'low' } : {}),
+      },
+      questionText: 'Generate one minimal image to verify the image endpoint.',
+    };
+  }
+  if (kind === 'embedding') {
+    return {
+      path: '/v1/embeddings',
+      body: { model: modelName, input: 'metapi vector probe' },
+      questionText: 'Create an embedding for a short probe string.',
+    };
+  }
+  return {
+    path: '/v1/rerank',
+    body: {
+      model: modelName,
+      query: 'metapi probe',
+      documents: ['A short probe document.', 'An unrelated item.'],
+      top_n: 1,
+    },
+    questionText: 'Rerank two short documents for a probe query.',
+  };
+}
+
+function isValidSpecializedProbeResponse(kind: SpecializedProbeKind, text: string): { valid: boolean; summary: string } {
+  let payload: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { valid: false, summary: '' };
+    payload = parsed as Record<string, unknown>;
+  } catch {
+    return { valid: false, summary: '' };
+  }
+  if (kind === 'embedding') {
+    const data = payload.data;
+    if (!Array.isArray(data)) return { valid: false, summary: '' };
+    const embedding = (data[0] as { embedding?: unknown } | undefined)?.embedding;
+    if (!Array.isArray(embedding) || embedding.length === 0
+      || !embedding.every((value) => typeof value === 'number' && Number.isFinite(value))) {
+      return { valid: false, summary: '' };
+    }
+    return { valid: true, summary: `embedding vector returned (${embedding.length} dimensions)` };
+  }
+  if (kind === 'image') {
+    const data = payload.data;
+    if (!Array.isArray(data)) return { valid: false, summary: '' };
+    const image = data.find((item) => item && typeof item === 'object') as Record<string, unknown> | undefined;
+    const hasImage = typeof image?.url === 'string' && image.url.length > 0
+      || typeof image?.b64_json === 'string' && image.b64_json.length > 0
+      || typeof image?.image_url === 'string' && image.image_url.length > 0;
+    return hasImage ? { valid: true, summary: 'image generated successfully' } : { valid: false, summary: '' };
+  }
+  const results = payload.results;
+  return Array.isArray(results) && results.length > 0
+    && results.every((item) => item && typeof item === 'object' && !Array.isArray(item)
+      && typeof (item as Record<string, unknown>).index === 'number'
+      && Number.isInteger((item as Record<string, unknown>).index))
+    ? { valid: true, summary: `rerank results returned (${results.length} item${results.length === 1 ? '' : 's'})` }
+    : { valid: false, summary: '' };
+}
+
+async function probeSpecializedModel(input: {
+  site: typeof schema.sites.$inferSelect;
+  account: typeof schema.accounts.$inferSelect;
+  modelName: string;
+  timeoutMs: number;
+  tokenValue: string;
+  tokenId?: number | null;
+  tokenGroup?: string | null;
+  runId?: string | null;
+  kind: SpecializedProbeKind;
+  markDispatched: () => void;
+}): Promise<RuntimeModelProbeResult> {
+  const startedAt = Date.now();
+  const deadlineAtMs = startedAt + Math.max(1, input.timeoutMs);
+  const { path, body, questionText } = buildSpecializedProbeRequest(input.kind, input.modelName);
+  const endpointBaseUrl = await withTimeout(
+    () => requireSiteApiBaseUrl(input.site),
+    resolveRemainingTimeoutMs(deadlineAtMs, 'site api endpoint resolution timeout'),
+    'site api endpoint resolution timeout',
+  );
+  const targetUrl = `${endpointBaseUrl.replace(/\/+$/, '')}${path}`;
+  const channelProxyUrl = resolveChannelProxyUrl(input.site, input.account.extraConfig);
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (input.tokenValue) headers.Authorization = `Bearer ${input.tokenValue}`;
+
+  const requestInit = await withSiteRecordProxyRequestInit(input.site, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  }, channelProxyUrl);
+  input.markDispatched();
+  const requestPromise = fetch(targetUrl, requestInit);
+  let response: RuntimeResponse;
+  try {
+    response = await withTimeout(
+      () => requestPromise,
+      resolveRemainingTimeoutMs(deadlineAtMs, `runtime model probe timeout (${Math.round(input.timeoutMs / 1000)}s)`),
+      `runtime model probe timeout (${Math.round(input.timeoutMs / 1000)}s)`,
+    );
+  } catch (error) {
+    // Let an already dispatched billable operation finish naturally, then
+    // drain its response rather than aborting the upstream connection.
+    void requestPromise.then((lateResponse) => readRuntimeResponseText(lateResponse, {
+      maxChars: MAX_JSON_UPSTREAM_BODY_TEXT_CHARS,
+    })).catch(() => {});
+    throw error;
+  }
+  const responseTextPromise = readRuntimeResponseText(response, {
+    maxChars: MAX_JSON_UPSTREAM_BODY_TEXT_CHARS,
+    rejectOnOverflow: true,
+  });
+  let responseText: string;
+  try {
+    responseText = await withTimeout(
+      () => responseTextPromise,
+      resolveRemainingTimeoutMs(deadlineAtMs, `runtime model probe timeout (${Math.round(input.timeoutMs / 1000)}s)`),
+      `runtime model probe timeout (${Math.round(input.timeoutMs / 1000)}s)`,
+    );
+  } catch (error) {
+    void responseTextPromise.catch(() => {});
+    throw error;
+  }
+
+  const latencyMs = Date.now() - startedAt;
+  if (!response.ok) {
+    const reason = classifyProbeFailureReason(response.status, responseText);
+    const unsupported = classifyUnsupportedFailure(response.status, responseText);
+    await db.insert(probeLogs).values({
+      siteId: input.site.id,
+      accountId: input.account.id,
+      tokenId: input.tokenId ?? null,
+      runId: input.runId ?? null,
+      modelName: input.modelName,
+      questionCategory: input.kind,
+      questionText,
+      responseText: null,
+      status: 'failed',
+      latencyMs,
+      tokensUsed: null,
+      estimatedCost: null,
+      errorMessage: reason,
+    }).catch((err: unknown) => console.error('[probe-log] Failed to insert specialized probe log:', err));
+    return { status: unsupported ? 'unsupported' : 'inconclusive', latencyMs, reason };
+  }
+
+  const parsed = isValidSpecializedProbeResponse(input.kind, responseText);
+  const usage = extractProbeUsage(responseText);
+  const estimatedCost = input.kind === 'embedding' && usage
+    ? await estimateProbeCost({
+      site: input.site,
+      account: input.account,
+      modelName: input.modelName,
+      tokenGroup: input.tokenGroup ?? null,
+      usage,
+    })
+    : null;
+  await db.insert(probeLogs).values({
+    siteId: input.site.id,
+    accountId: input.account.id,
+    tokenId: input.tokenId ?? null,
+    runId: input.runId ?? null,
+    modelName: input.modelName,
+    questionCategory: input.kind,
+    questionText,
+    responseText: parsed.valid ? parsed.summary : null,
+    status: parsed.valid ? 'success' : 'failed',
+    latencyMs,
+    tokensUsed: usage?.totalTokens ?? null,
+    estimatedCost,
+    errorMessage: parsed.valid ? null : `successful HTTP response did not contain a valid ${input.kind} result`,
+  }).catch((err: unknown) => console.error('[probe-log] Failed to insert specialized probe log:', err));
+
+  return parsed.valid
+    ? { status: 'supported', latencyMs, reason: `${input.kind} probe succeeded` }
+    : { status: 'inconclusive', latencyMs, reason: `HTTP ${response.status} response did not contain a valid ${input.kind} result` };
+}
+
 export async function probeRuntimeModel(input: {
   site: typeof schema.sites.$inferSelect;
   account: typeof schema.accounts.$inferSelect;
@@ -744,7 +951,23 @@ export async function probeRuntimeModel(input: {
   if (isModelDisabledForSite(stickyDisables, input.site.id, input.modelName, input.account.id, probeTokenId)) {
     return { status: 'skipped', latencyMs: null, reason: 'model manually disabled for this key' };
   }
-  if (!isLikelyConversationModel(input.modelName)) {
+  const specializedKind = resolveSpecializedProbeKind(input.modelName);
+  if (!isLikelyConversationModel(input.modelName) && !specializedKind) {
+    await db.insert(probeLogs).values({
+      siteId: input.site.id,
+      accountId: input.account.id,
+      tokenId: input.tokenId ?? null,
+      runId: input.runId ?? null,
+      modelName: input.modelName,
+      questionCategory: 'unknown',
+      questionText: '未发送请求：该模型不支持聊天探测，依据上游模型目录保留可路由状态',
+      responseText: null,
+      status: 'skipped',
+      latencyMs: null,
+      tokensUsed: null,
+      estimatedCost: null,
+      errorMessage: 'no compatible chat probe endpoint; model kept from upstream catalog',
+    }).catch((err: unknown) => console.error('[probe-log] Failed to insert skipped probe log:', err));
     return {
       status: 'skipped',
       latencyMs: null,
@@ -773,6 +996,14 @@ export async function probeRuntimeModel(input: {
   // that did reach the upstream (and consumed quota there).
   let requestDispatched = false;
   try {
+    if (specializedKind) {
+      return await probeSpecializedModel({
+        ...input,
+        tokenValue,
+        kind: specializedKind,
+        markDispatched: () => { requestDispatched = true; },
+      });
+    }
     // 与线上代理/模型发现一致：测活请求必须走站点配置的 API 入口（apiEndpoints），
     // 未配置入口时才回退 site.url。此前直接用 site.url 会让配置了 apiEndpoints 的
     // 站点把探测打到错误地址（例如官方站 404 页面），与真实路由不一致。
@@ -1061,6 +1292,7 @@ export async function probeRuntimeModel(input: {
         .from(probeLogs)
         .where(and(
           eq(probeLogs.accountId, input.account.id),
+          ...(input.tokenId != null ? [eq(probeLogs.tokenId, input.tokenId)] : []),
           eq(probeLogs.modelName, input.modelName),
         ))
         .orderBy(desc(probeLogs.createdAt), desc(probeLogs.id))

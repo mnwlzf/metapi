@@ -8,6 +8,12 @@ const withSiteRecordProxyRequestInitMock = vi.fn();
 const getOauthInfoFromAccountMock = vi.fn();
 const buildOauthProviderHeadersMock = vi.fn();
 const requireSiteApiBaseUrlMock = vi.fn();
+const fetchMock = vi.fn();
+
+vi.mock('undici', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('undici')>();
+  return { ...actual, fetch: (...args: unknown[]) => fetchMock(...args) };
+});
 
 vi.mock('./upstreamEndpointRuntime.js', () => ({
   resolveUpstreamEndpointCandidates: (...args: unknown[]) => resolveUpstreamEndpointCandidatesMock(...args),
@@ -96,6 +102,7 @@ describe('probeRuntimeModel', () => {
     getOauthInfoFromAccountMock.mockReset();
     buildOauthProviderHeadersMock.mockReset();
     requireSiteApiBaseUrlMock.mockReset();
+    fetchMock.mockReset();
     probeLogsInsertMock.mockReset();
     disabledRowsMock.mockReset().mockReturnValue([]);
 
@@ -125,6 +132,126 @@ describe('probeRuntimeModel', () => {
     expect(result.status).toBe('skipped');
     expect(resolveUpstreamEndpointCandidatesMock).not.toHaveBeenCalled();
     expect(dispatchRuntimeRequestMock).not.toHaveBeenCalled();
+  });
+
+  it('probes image models through image generation with one low-cost output', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ url: 'https://image.example/test.png' }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+
+    const result = await probeRuntimeModel({
+      site, account, modelName: 'gpt-image-1', tokenId: 7, tokenValue: 'sk-probe', timeoutMs: 1_000,
+    });
+
+    expect(result.status).toBe('supported');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://probe.example.com/v1/images/generations');
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      model: 'gpt-image-1', n: 1, size: '1024x1024', quality: 'low',
+    });
+    expect(probeLogsInsertMock).toHaveBeenCalledWith(expect.objectContaining({
+      questionCategory: 'image',
+      status: 'success',
+      estimatedCost: null,
+      responseText: 'image generated successfully',
+    }));
+  });
+
+  it('probes embedding models through the embeddings endpoint and validates the vector', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      data: [{ object: 'embedding', embedding: [0.1, -0.2, 0.3] }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+
+    const result = await probeRuntimeModel({
+      site, account, modelName: 'text-embedding-3-small', tokenId: 7, tokenValue: 'sk-probe', timeoutMs: 1_000,
+    });
+
+    expect(result.status).toBe('supported');
+    const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://probe.example.com/v1/embeddings');
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      model: 'text-embedding-3-small', input: 'metapi vector probe',
+    });
+    expect(probeLogsInsertMock).toHaveBeenCalledWith(expect.objectContaining({
+      questionCategory: 'embedding',
+      status: 'success',
+      responseText: 'embedding vector returned (3 dimensions)',
+    }));
+  });
+
+  it('does not treat an empty embedding response as a successful probe', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ embedding: [] }] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+
+    const result = await probeRuntimeModel({
+      site, account, modelName: 'text-embedding-3-small', tokenId: 7, tokenValue: 'sk-probe', timeoutMs: 1_000,
+    });
+
+    expect(result.status).toBe('inconclusive');
+    expect(probeLogsInsertMock).toHaveBeenCalledWith(expect.objectContaining({
+      questionCategory: 'embedding',
+      status: 'failed',
+      errorMessage: expect.stringContaining('valid embedding result'),
+    }));
+  });
+
+  it('records an image model rejection as a per-key unsupported verdict', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      error: { message: 'model_not_found' },
+    }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+
+    const result = await probeRuntimeModel({
+      site, account, modelName: 'gpt-image-1', tokenId: 7, tokenValue: 'sk-probe', timeoutMs: 1_000,
+    });
+
+    expect(result.status).toBe('unsupported');
+    expect(probeLogsInsertMock).toHaveBeenCalledWith(expect.objectContaining({
+      tokenId: 7,
+      questionCategory: 'image',
+      status: 'failed',
+      estimatedCost: null,
+    }));
+  });
+
+  it('probes rerank models with a small query and document set', async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+      results: [{ index: 0, relevance_score: 0.9 }],
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const { probeRuntimeModel } = await import('./runtimeModelProbe.js');
+
+    const result = await probeRuntimeModel({
+      site, account, modelName: 'bge-reranker-v2-m3', tokenId: 7, tokenValue: 'sk-probe', timeoutMs: 1_000,
+    });
+
+    expect(result.status).toBe('supported');
+    const [url, request] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://probe.example.com/v1/rerank');
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      model: 'bge-reranker-v2-m3', query: 'metapi probe', top_n: 1,
+      documents: ['A short probe document.', 'An unrelated item.'],
+    });
+    expect(probeLogsInsertMock).toHaveBeenCalledWith(expect.objectContaining({
+      questionCategory: 'rerank',
+      status: 'success',
+      responseText: 'rerank results returned (1 item)',
+    }));
   });
 
   it('keeps automatic bans eligible for runtime recovery probes', async () => {
@@ -389,9 +516,8 @@ describe('probeRuntimeModel', () => {
 
   it('does not send max_tokens/max_completion_tokens so probes look like normal client traffic', async () => {
     const { buildRuntimeProbeChatBody } = await import('./runtimeModelProbe.js');
-    // A small max_tokens is a classic probe signature for relays (one-api/
-    // new-api). Leaving it unset uses the upstream default, which matches a
-    // normal conversation request.
+    // Keep these unset: low output caps are a common health-check signature on
+    // relays, and the prompt itself asks for a brief response.
     expect(buildRuntimeProbeChatBody('o1', 'ping')).not.toHaveProperty('max_completion_tokens');
     expect(buildRuntimeProbeChatBody('gpt-4o', 'ping')).not.toHaveProperty('max_tokens');
     expect(buildRuntimeProbeChatBody('gpt-4o', 'ping')).not.toHaveProperty('max_completion_tokens');

@@ -52,6 +52,9 @@ const EMPTY_FILTER_OPTIONS = {
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
+  image: tr('Image generation'),
+  embedding: tr('Embedding vector'),
+  rerank: tr('Rerank'),
   math: tr('数学'),
   logic: tr('逻辑'),
   knowledge: tr('知识'),
@@ -59,12 +62,14 @@ const CATEGORY_LABELS: Record<string, string> = {
 };
 
 const STATUS_LABELS: Record<string, string> = {
+  skipped: tr('Probe skipped (catalogue only)'),
   success: tr('成功'),
   failed: tr('失败'),
   timeout: tr('超时'),
 };
 
 const STATUS_COLORS: Record<string, string> = {
+  skipped: 'badge',
   success: 'badge badge-success',
   failed: 'badge badge-error',
   timeout: 'badge badge-warning',

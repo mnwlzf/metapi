@@ -13,6 +13,7 @@ import { buildDailySummaryNotification, collectDailySummaryMetrics } from './dai
 import { cleanupConfiguredLogs } from './logCleanupService.js';
 import { startModelsDevPriceSync, stopModelsDevPriceSync } from './modelPriceCatalogService.js';
 import { normalizeLogCleanupRetentionDays } from '../shared/logCleanupRetentionDays.js';
+import { runScheduledModelProbeBatch } from './modelService.js';
 
 export type CheckinScheduleMode = 'cron' | 'interval';
 
@@ -22,6 +23,7 @@ let balanceTask: ScheduledTask | null = null;
 let modelRefreshTask: ScheduledTask | null = null;
 let dailySummaryTask: ScheduledTask | null = null;
 let logCleanupTask: ScheduledTask | null = null;
+let modelProbeIntervalTimer: ReturnType<typeof setInterval> | null = null;
 const intervalAttemptByAccount = new Map<number, number>();
 let checkinPassInFlight: Promise<void> | null = null;
 let checkinPassStartedAtMs = 0;
@@ -37,6 +39,7 @@ let checkinCronPassStartedAtMs = 0;
 // one (the stale pass keeps draining in the background). Without this, one
 // wedged pass silently disabled refreshes for 15h+ (2026-09-12).
 const PASS_STALE_AFTER_MS = 20 * 60_000;
+const MODEL_PROBE_POLL_MS = 5 * 60_000;
 
 /**
  * A wedged pass cannot be cancelled, so the stale unlock may orphan at most
@@ -591,6 +594,12 @@ export async function startScheduler() {
   dailySummaryTask?.stop();
   logCleanupTask?.stop();
   startCheckinSchedule();
+  if (modelProbeIntervalTimer) clearInterval(modelProbeIntervalTimer);
+  modelProbeIntervalTimer = setInterval(() => {
+    void runScheduledModelProbeBatch().catch((error) => {
+      console.error('[Scheduler] Scheduled model probe error:', error);
+    });
+  }, MODEL_PROBE_POLL_MS);
   balanceTask = createBalanceTask(activeBalanceCron);
   modelRefreshTask = createModelRefreshTask(activeModelRefreshCron);
   dailySummaryTask = createDailySummaryTask(activeDailySummaryCron);
@@ -677,6 +686,10 @@ export function stopScheduler() {
   modelRefreshTask?.stop();
   dailySummaryTask?.stop();
   logCleanupTask?.stop();
+  if (modelProbeIntervalTimer) {
+    clearInterval(modelProbeIntervalTimer);
+    modelProbeIntervalTimer = null;
+  }
   balanceTask = null;
   modelRefreshTask = null;
   dailySummaryTask = null;
@@ -690,6 +703,10 @@ export function __resetCheckinSchedulerForTests() {
   modelRefreshTask?.stop();
   dailySummaryTask?.stop();
   logCleanupTask?.stop();
+  if (modelProbeIntervalTimer) {
+    clearInterval(modelProbeIntervalTimer);
+    modelProbeIntervalTimer = null;
+  }
   balanceTask = null;
   modelRefreshTask = null;
   dailySummaryTask = null;

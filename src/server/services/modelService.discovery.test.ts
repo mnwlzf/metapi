@@ -211,7 +211,6 @@ describe('refreshModelsForAccount credential discovery', () => {
       isDefault: true,
       valueStatus: 'ready',
     }).run();
-
     const result = await refreshModelsForAccount(account.id);
     expect(result).toMatchObject({
       accountId: account.id,
@@ -229,8 +228,7 @@ describe('refreshModelsForAccount credential discovery', () => {
     expect(accountRows.map((row: any) => row.modelName)).toEqual(['grok-4.5']);
 
     const token = await db.select().from(schema.accountTokens)
-      .where(eq(schema.accountTokens.accountId, account.id))
-      .get();
+      .where(eq(schema.accountTokens.accountId, account.id)).get();
     const tokenRows = await db.select().from(schema.tokenModelAvailability)
       .where(eq(schema.tokenModelAvailability.tokenId, token!.id))
       .all();
@@ -238,6 +236,43 @@ describe('refreshModelsForAccount credential discovery', () => {
 
     // Session credential must not be queried while managed keys already yielded models.
     expect(getModelsMock.mock.calls.some((call) => call[1] === 'session-token')).toBe(false);
+  });
+
+  it('preserves known route state and keeps newly discovered key models pending a successful probe', async () => {
+    getApiTokenMock.mockResolvedValue(null);
+    getModelsMock.mockImplementation(async (_baseUrl: string, token: string) => (
+      token === 'sk-refresh' ? ['gpt-4o', 'gpt-5.2'] : []
+    ));
+    const site = await db.insert(schema.sites).values({
+      name: 'refresh-state', url: 'https://refresh-state.example.com', platform: 'new-api', status: 'active',
+    }).returning().get();
+    const account = await db.insert(schema.accounts).values({
+      siteId: site.id, username: 'refresh-user', accessToken: 'session-token', apiToken: 'sk-refresh', status: 'active',
+    }).returning().get();
+    const token = await db.insert(schema.accountTokens).values({
+      accountId: account.id, name: 'key', token: 'sk-refresh', source: 'sync', enabled: true, isDefault: true, valueStatus: 'ready',
+    }).returning().get();
+    await db.insert(schema.modelAvailability).values({
+      accountId: account.id, modelName: 'gpt-4o', available: true, connectivity: true,
+    }).run();
+    await db.insert(schema.tokenModelAvailability).values({
+      tokenId: token.id, modelName: 'gpt-4o', available: true, connectivity: true,
+    }).run();
+
+    await refreshModelsForAccount(account.id);
+
+    const accountRows = await db.select().from(schema.modelAvailability)
+      .where(eq(schema.modelAvailability.accountId, account.id)).all();
+    expect(accountRows.map((row: any) => [row.modelName, row.available]).sort((a: any, b: any) => a[0].localeCompare(b[0]))).toEqual([
+      ['gpt-4o', true],
+      ['gpt-5.2', false],
+    ]);
+    const tokenRows = await db.select().from(schema.tokenModelAvailability)
+      .where(eq(schema.tokenModelAvailability.tokenId, token.id)).all();
+    expect(tokenRows.map((row: any) => [row.modelName, row.available]).sort((a: any, b: any) => a[0].localeCompare(b[0]))).toEqual([
+      ['gpt-4o', true],
+      ['gpt-5.2', false],
+    ]);
   });
 
   it('cleans stale per-key probe bans omitted from a successful key discovery', async () => {
