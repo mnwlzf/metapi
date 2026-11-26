@@ -234,7 +234,8 @@ export async function getModelProbePlan() {
     modelName: schema.siteDisabledModels.modelName,
     source: schema.siteDisabledModels.source,
   }).from(schema.siteDisabledModels).all();
-  const tokenMetaById = new Map(tokenMetaRows.map((row) => [row.tokenId, row]));
+  const tokenMetaById = new Map<number, (typeof tokenMetaRows)[number]>();
+  for (const row of tokenMetaRows) tokenMetaById.set(row.tokenId, row);
   const candidateRows = [...keyRows];
   const candidateCells = new Set(candidateRows.map((row) => `${row.tokenId}:${String(row.modelName).toLowerCase()}`));
   const addCandidate = (tokenId: number, modelName: string) => {
