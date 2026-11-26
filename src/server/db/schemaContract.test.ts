@@ -40,13 +40,23 @@ describe('schema contract generation', () => {
     expect(contract.indexes).toContainEqual(
       expect.objectContaining({ name: 'sites_status_idx', table: 'sites', unique: false }),
     );
+    // Verdicts are per upstream key: the uniqueness carries token_id, so two keys
+    // of one account can disagree about a model.
     expect(contract.uniques).toContainEqual(
       expect.objectContaining({
-        name: 'site_disabled_models_site_account_model_unique',
+        name: 'site_disabled_models_site_account_token_model_unique',
         table: 'site_disabled_models',
-        columns: ['site_id', 'account_id', 'model_name'],
+        columns: ['site_id', 'account_id', 'token_id', 'model_name'],
       }),
     );
+    expect(contract.tables.site_disabled_models.columns.token_id).toMatchObject({
+      logicalType: 'integer',
+      notNull: true,
+      defaultValue: '0',
+    });
+    expect(contract.tables.probe_logs.columns.token_id).toBeDefined();
+    expect(contract.tables.probe_logs.columns.run_id).toBeDefined();
+    expect(contract.tables.probe_logs.columns.estimated_cost).toBeDefined();
     expect(contract.uniques).toContainEqual(
       expect.objectContaining({
         name: 'model_availability_account_model_unique',

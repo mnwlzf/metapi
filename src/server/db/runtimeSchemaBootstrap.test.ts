@@ -73,9 +73,12 @@ describe('runtime schema bootstrap', () => {
     expect(executedSql.slice(0, expectedUpgradeSql.length)).toEqual(expectedUpgradeSql);
     // The additive upgrade statements come first and never drop anything; the
     // index replacement is the compat layer's job, which runs right after them.
+    // Two legacy uniques have to be replaced now: (site, model) predates per-key
+    // disabling, (site, account, model) predates per-key *verdicts*.
     const dropStatements = executedSql.filter((sqlText) => sqlText.trim().toLowerCase().startsWith('drop index'));
-    expect(dropStatements).toHaveLength(1);
+    expect(dropStatements).toHaveLength(2);
     expect(dropStatements[0]).toContain('site_disabled_models_site_model_unique');
+    expect(dropStatements[1]).toContain('site_disabled_models_site_account_model_unique');
     expect(executedSql.indexOf(dropStatements[0]!)).toBeGreaterThanOrEqual(expectedUpgradeSql.length);
   });
 
@@ -119,8 +122,10 @@ describe('runtime schema bootstrap', () => {
         .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'site_disabled_models'")
         .all() as Array<{ name: string }>;
       const indexNames = indexes.map((index) => index.name);
-      expect(indexNames).toContain('site_disabled_models_site_account_model_unique');
+      // Verdicts are per upstream key now, so the uniqueness carries token_id.
+      expect(indexNames).toContain('site_disabled_models_site_account_token_model_unique');
       expect(indexNames).not.toContain('site_disabled_models_site_model_unique');
+      expect(indexNames).not.toContain('site_disabled_models_site_account_model_unique');
     } finally {
       sqlite.close();
     }
