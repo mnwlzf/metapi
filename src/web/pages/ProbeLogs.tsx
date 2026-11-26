@@ -118,10 +118,20 @@ function ProbeDetailFields({
         <div className="probe-detail-value">{formatLatency(log.latencyMs)}</div>
       </div>
       <div className="probe-detail-item">
-        <div className="probe-detail-label">Token</div>
+        <div className="probe-detail-label">{tr('令牌')}</div>
         <div className="probe-detail-value">
-          {log.tokensUsed || '-'}
-          {typeof log.estimatedCost === 'number' ? ` · ${log.estimatedCost.toFixed(6)}` : ''}
+          {log.tokenName || (log.tokenId ? `令牌 #${log.tokenId}` : tr('账号默认'))}
+          {log.tokenGroup ? ` · #${log.tokenGroup}` : ''}
+        </div>
+      </div>
+      <div className="probe-detail-item">
+        <div className="probe-detail-label">Token</div>
+        <div className="probe-detail-value">{log.tokensUsed || '-'}</div>
+      </div>
+      <div className="probe-detail-item">
+        <div className="probe-detail-label">{tr('实际消耗额度')}</div>
+        <div className="probe-detail-value">
+          {typeof log.estimatedCost === 'number' ? `$${log.estimatedCost.toFixed(6)}` : '-'}
         </div>
       </div>
 
@@ -315,6 +325,18 @@ export default function ProbeLogs() {
     return `${(ms / 1000).toFixed(2)}s`;
   };
 
+  /**
+   * Average latency keeps four significant digits: it is an aggregate, so
+   * "1.234567s" is precision the data cannot back, and "1.23s" hides a
+   * difference that matters when comparing probe passes.
+   */
+  const formatAverageLatency = (ms: number | null | undefined) => {
+    if (!ms || !Number.isFinite(ms) || ms <= 0) return '-';
+    const digits = 4;
+    if (ms < 1000) return `${Number(ms.toPrecision(digits))}ms`;
+    return `${Number((ms / 1000).toPrecision(digits))}s`;
+  };
+
   // 时间格式跟随界面语言：中文用 zh-CN（YYYY/MM/DD HH:mm:ss），英文用 en（MM/DD/YYYY hh:mm:ss AM/PM）。
   // 避免中英文界面下时间格式不统一。
   const fmtDateTime = (value?: string | null) =>
@@ -366,15 +388,15 @@ export default function ProbeLogs() {
           </div>
           <div className="probe-stat-card">
             <div className="probe-stat-label">{tr('平均延迟')}</div>
-            <div className="probe-stat-value">{formatLatency(stats.avgLatencyMs)}</div>
+            <div className="probe-stat-value">{formatAverageLatency(stats.avgLatencyMs)}</div>
           </div>
           <div className="probe-stat-card">
             <div className="probe-stat-label">{tr('总 Token')}</div>
             <div className="probe-stat-value">{stats.totalTokens || 0}</div>
-      </div>
-      <div className="probe-stat-card">
-        <div className="probe-stat-label">{tr('消耗额度')}</div>
-        <div className="probe-stat-value">${Number(stats.totalCost || 0).toFixed(6)}</div>
+          </div>
+          <div className="probe-stat-card">
+            <div className="probe-stat-label">{tr('总消耗额度')}</div>
+            <div className="probe-stat-value">${Number(stats.totalCost || 0).toFixed(6)}</div>
           </div>
         </div>
       )}
@@ -653,9 +675,14 @@ export default function ProbeLogs() {
                   >
                     <MobileField label={tr('时间')} value={fmtDateTime(log.createdAt)} />
                     <MobileField label={tr('站点/账号')} value={`${log.siteName || `站点 #${log.siteId}`} · ${log.accountUsername || `账号 #${log.accountId}`}`} />
+                    <MobileField label={tr('令牌')} value={log.tokenName || (log.tokenId ? `令牌 #${log.tokenId}` : tr('账号默认'))} />
                     <MobileField label={tr('分类')} value={CATEGORY_LABELS[log.questionCategory] || '-'} />
                     <MobileField label={tr('延迟')} value={formatLatency(log.latencyMs)} />
                     <MobileField label="Token" value={log.tokensUsed || '-'} />
+                    <MobileField
+                      label={tr('实际消耗额度')}
+                      value={typeof log.estimatedCost === 'number' ? `$${log.estimatedCost.toFixed(6)}` : '-'}
+                    />
                     <MobileField label={tr('问题')} value={log.questionText} stacked />
                   </MobileCard>
                 ))}
@@ -663,14 +690,16 @@ export default function ProbeLogs() {
             ) : (
                       <table className="data-table probe-logs-table">
                 <colgroup>
-                  <col style={{ width: 90 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 150 }} />
                   <col style={{ width: 160 }} />
-                  <col style={{ width: 180 }} />
-                  <col style={{ width: 130 }} />
-                  <col style={{ width: 90 }} />
-                  <col style={{ width: 90 }} />
-                  <col style={{ width: 90 }} />
-                  <col style={{ width: 350 }} />
+                  <col style={{ width: 150 }} />
+                  <col style={{ width: 120 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 80 }} />
+                  <col style={{ width: 100 }} />
+                  <col style={{ width: 320 }} />
                 </colgroup>
                 <thead>
                   <tr>
@@ -682,7 +711,7 @@ export default function ProbeLogs() {
                     <th>{tr('分类')}</th>
                     <th>{tr('延迟')}</th>
                     <th>Token</th>
-            <th>{tr('消耗额度')}</th>
+                    <th>{tr('实际消耗额度')}</th>
                     <th>{tr('问题')}</th>
                   </tr>
                 </thead>
@@ -707,6 +736,14 @@ export default function ProbeLogs() {
                         <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>{log.accountUsername || `账号 #${log.accountId}`}</div>
                       </td>
                       <td>
+                        {/* Which upstream key was probed: a verdict belongs to one
+                            key's group, so the row is meaningless without it. */}
+                        <div>{log.tokenName || (log.tokenId ? `${tr('令牌')} #${log.tokenId}` : tr('账号默认'))}</div>
+                        {log.tokenGroup ? (
+                          <div style={{ fontSize: 11, color: 'var(--color-text-muted)' }}>#{log.tokenGroup}</div>
+                        ) : null}
+                      </td>
+                      <td>
                         {CATEGORY_LABELS[log.questionCategory] || '-'}
                       </td>
                       <td>
@@ -714,9 +751,9 @@ export default function ProbeLogs() {
                       </td>
                       <td>
                         {log.tokensUsed || '-'}
-          </td>
-          <td style={{ fontVariantNumeric: 'tabular-nums' }}>
-            {typeof log.estimatedCost === 'number' ? `${log.estimatedCost.toFixed(6)}` : '-'}
+                      </td>
+                      <td style={{ fontVariantNumeric: 'tabular-nums' }}>
+                        {typeof log.estimatedCost === 'number' ? `$${log.estimatedCost.toFixed(6)}` : '-'}
                       </td>
                       <td className="probe-question-cell">
                         {log.questionText}
