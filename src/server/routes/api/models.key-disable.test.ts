@@ -125,6 +125,21 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     expect((await db.select().from(schema.siteDisabledModels).where(eq(schema.siteDisabledModels.tokenId, b.id)).get())?.source).toBe('probe');
   });
 
+  it('does not show account-wide probe failures in a key model list', async () => {
+    const { site, account, a } = await seed();
+    await db.insert(schema.siteDisabledModels).values([
+      { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'gpt-only-account-probe', source: 'probe' },
+      { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'account-policy-model', source: 'manual' },
+      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'key-probe-model', source: 'probe' },
+    ]).run();
+
+    const detail = await get(`/api/accounts/${account.id}/models?tokenId=${a.id}`);
+    const byName = new Map(detail.models.map((model: { name: string }) => [model.name, model]));
+    expect(byName.has('gpt-only-account-probe')).toBe(false);
+    expect(byName.get('account-policy-model')).toMatchObject({ inherited: true, disabled: true });
+    expect(byName.get('key-probe-model')).toMatchObject({ inherited: false, disabled: true, disabledSource: 'probe' });
+  });
+
   it('keeps unavailable records editable before and after promoting a probe ban to manual', async () => {
     const { site, account, a, b } = await seed();
     await db.update(schema.tokenModelAvailability).set({ available: false, connectivity: false })

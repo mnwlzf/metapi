@@ -56,6 +56,12 @@ export async function getAccountModelList(accountId: number, tokenId = 0) {
   const disabledRows = await db.select().from(schema.siteDisabledModels)
     .where(and(eq(schema.siteDisabledModels.siteId, site.id), eq(schema.siteDisabledModels.accountId, accountId),
       inArray(schema.siteDisabledModels.tokenId, tokenId > 0 ? [0, tokenId] : [0]))).all();
+  // A per-key editor may inherit explicit account-wide policy, but account-wide
+  // probe failures belong to the account-level discovery context. Exposing them
+  // in every key list mixes models that were never advertised for that key.
+  const scopedDisabledRows = tokenId > 0
+    ? disabledRows.filter((row) => row.tokenId === tokenId || row.source === 'manual' || row.source === 'policy')
+    : disabledRows;
   type ProbeStatus = 'available' | 'unavailable' | 'unknown';
   const rows = new Map<string, { name: string; latencyMs: number | null; isManual: boolean; probeStatus: ProbeStatus }>();
   for (const row of modelRows) {
@@ -69,13 +75,13 @@ export async function getAccountModelList(accountId: number, tokenId = 0) {
         : existing?.probeStatus === 'unavailable' || probeStatus === 'unavailable' ? 'unavailable' : 'unknown',
     });
   }
-  for (const row of disabledRows) {
+  for (const row of scopedDisabledRows) {
     if (!rows.has(row.modelName)) rows.set(row.modelName, { name: row.modelName, latencyMs: null, isManual: false, probeStatus: 'unknown' });
   }
   // Management includes unavailable models so operators can promote an
   // automatic failure into a manual ban, or release a ban before recovery.
   const models = [...rows.values()].map((row) => {
-    const matches = disabledRows.filter((disabled) => (
+    const matches = scopedDisabledRows.filter((disabled) => (
       matchesDisabledModelName(disabled.modelName, row.name)
     ));
     const sticky = matches.find((disabled) => disabled.source === 'manual' || disabled.source === 'policy');
