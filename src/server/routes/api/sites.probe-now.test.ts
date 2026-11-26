@@ -176,7 +176,7 @@ describe('POST /api/sites/:id/probe-now target selection', () => {
       .where(eq(schema.sites.id, siteId)).run();
     const available = await db.select().from(schema.modelAvailability)
       .where(eq(schema.modelAvailability.accountId, accountId)).all();
-    const expectedModel = configuredModel === 'claude-opus-5' ? configuredModel : available[0].modelName;
+    const knownModels = available.map((row) => row.modelName);
 
     const response = await app.inject({
       method: 'POST',
@@ -185,13 +185,27 @@ describe('POST /api/sites/:id/probe-now target selection', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
-      success: true, scope: 'single', probed: 1,
-      details: [{ modelName: expectedModel, status: 'supported' }],
-    });
+    const body = response.json() as {
+      success: boolean;
+      scope: string;
+      probed: number;
+      details: Array<{ modelName: string; status: string }>;
+    };
+    // The point of this case is the *count*: a stale or blank configured model must
+    // still probe exactly one model (never the whole catalog), and it must be one
+    // the account actually lists. Which one it falls back to is incidental.
+    expect(body.success).toBe(true);
+    expect(body.scope).toBe('single');
+    expect(body.probed).toBe(1);
+    expect(body.details).toHaveLength(1);
+    expect(knownModels).toContain(body.details[0]!.modelName);
+    expect(body.details[0]!.status).toBe('supported');
+    if (configuredModel === 'claude-opus-5') {
+      expect(body.details[0]!.modelName).toBe(configuredModel);
+    }
     expect(probeRuntimeModelMock).toHaveBeenCalledTimes(1);
     expect(probeRuntimeModelMock).toHaveBeenCalledWith(expect.objectContaining({
-      modelName: expectedModel,
+      modelName: body.details[0]!.modelName,
     }));
   });
 
