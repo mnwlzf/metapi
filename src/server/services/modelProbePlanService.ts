@@ -1,6 +1,7 @@
-import { and, eq, gte, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { upsertSetting } from '../db/upsertSetting.js';
+import { matchesDisabledModelName } from './siteDisabledModels.js';
 
 export const MODEL_PROBE_PLAN_SETTING_KEY = 'model_probe_plan_overrides';
 export const MODEL_PROBE_INTERVALS_HOURS = [1, 6, 12, 24, 72] as const;
@@ -93,6 +94,245 @@ export async function getModelProbePlan() {
     }
   }
   const overrides = await getModelProbeIntervalOverrides();
+  const keyRows = await db.select({
+    tokenId: schema.tokenModelAvailability.tokenId,
+    modelName: schema.tokenModelAvailability.modelName,
+    available: schema.tokenModelAvailability.available,
+    connectivity: schema.tokenModelAvailability.connectivity,
+    latencyMs: schema.tokenModelAvailability.latencyMs,
+    checkedAt: schema.tokenModelAvailability.checkedAt,
+    keyName: schema.accountTokens.name,
+    keyGroup: schema.accountTokens.tokenGroup,
+    accountId: schema.accounts.id,
+    accountName: schema.accounts.username,
+    siteId: schema.sites.id,
+    siteName: schema.sites.name,
+    platform: schema.sites.platform,
+  }).from(schema.tokenModelAvailability)
+    .innerJoin(schema.accountTokens, eq(schema.tokenModelAvailability.tokenId, schema.accountTokens.id))
+    .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
+    .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+    .where(and(
+      inArray(schema.tokenModelAvailability.modelName, models),
+      eq(schema.accountTokens.enabled, true),
+      eq(schema.accounts.status, 'active'),
+      eq(schema.sites.status, 'active'),
+    )).all();
+  const tokenMetaRows = await db.select({
+    tokenId: schema.accountTokens.id,
+    keyName: schema.accountTokens.name,
+    keyGroup: schema.accountTokens.tokenGroup,
+    accountId: schema.accounts.id,
+    accountName: schema.accounts.username,
+    siteId: schema.sites.id,
+    siteName: schema.sites.name,
+    platform: schema.sites.platform,
+  }).from(schema.accountTokens)
+    .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
+    .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+    .where(and(
+      eq(schema.accountTokens.enabled, true),
+      eq(schema.accounts.status, 'active'),
+      eq(schema.sites.status, 'active'),
+    )).all();
+  const enabledTokenOwners = await db.select({ accountId: schema.accountTokens.accountId })
+    .from(schema.accountTokens)
+    .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
+    .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+    .where(and(
+      eq(schema.accountTokens.enabled, true),
+      eq(schema.accounts.status, 'active'),
+      eq(schema.sites.status, 'active'),
+    )).groupBy(schema.accountTokens.accountId).all();
+  const accountsWithEnabledTokens = new Set(enabledTokenOwners.map((row) => row.accountId));
+  const accountOnlyRows = (await db.select({
+      accountId: schema.modelAvailability.accountId,
+      modelName: schema.modelAvailability.modelName,
+      available: schema.modelAvailability.available,
+      connectivity: schema.modelAvailability.connectivity,
+      latencyMs: schema.modelAvailability.latencyMs,
+      checkedAt: schema.modelAvailability.checkedAt,
+      accountName: schema.accounts.username,
+      siteId: schema.sites.id,
+      siteName: schema.sites.name,
+      platform: schema.sites.platform,
+    }).from(schema.modelAvailability)
+      .innerJoin(schema.accounts, eq(schema.modelAvailability.accountId, schema.accounts.id))
+      .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
+      .where(and(
+        inArray(schema.modelAvailability.modelName, models),
+        eq(schema.accounts.status, 'active'),
+        eq(schema.sites.status, 'active'),
+      )).all()
+  ).filter((row) => !accountsWithEnabledTokens.has(row.accountId));
+  const activeAccountIds = Array.from(new Set([
+    ...tokenMetaRows.map((row) => row.accountId),
+    ...accountOnlyRows.map((row) => row.accountId),
+  ]));
+  const keyUsageRows = activeAccountIds.length === 0 ? [] : await db.select({
+    accountId: schema.proxyLogs.accountId,
+    tokenId: schema.proxyLogs.tokenId,
+    requested: schema.proxyLogs.modelRequested,
+    actual: schema.proxyLogs.modelActual,
+    calls: sql<number>`count(*)`,
+  }).from(schema.proxyLogs).where(and(
+    inArray(schema.proxyLogs.accountId, activeAccountIds),
+    gte(schema.proxyLogs.createdAt, cutoff),
+  )).groupBy(
+    schema.proxyLogs.accountId,
+    schema.proxyLogs.tokenId,
+    schema.proxyLogs.modelRequested,
+    schema.proxyLogs.modelActual,
+  ).all();
+  const keyUsage = new Map<string, number>();
+  const accountUsage = new Map<string, number>();
+  for (const row of keyUsageRows) {
+    if (row.accountId == null) continue;
+    const calls = Number(row.calls || 0);
+    for (const key of new Set([row.requested, row.actual].map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))) {
+      if (row.tokenId == null) {
+        const accountKey = `${row.accountId}:${key}`;
+        accountUsage.set(accountKey, (accountUsage.get(accountKey) || 0) + calls);
+        continue;
+      }
+      const usageKey = `${row.accountId}:${row.tokenId}:${key}`;
+      keyUsage.set(usageKey, (keyUsage.get(usageKey) || 0) + calls);
+    }
+  }
+  const latestProbeRows = await db.select({
+    id: sql<number>`max(${schema.probeLogs.id})`,
+    tokenId: schema.probeLogs.tokenId,
+    accountId: schema.probeLogs.accountId,
+    modelName: schema.probeLogs.modelName,
+  }).from(schema.probeLogs).where(inArray(schema.probeLogs.modelName, models))
+    .groupBy(schema.probeLogs.tokenId, schema.probeLogs.accountId, schema.probeLogs.modelName).all();
+  const latestProbeIds = latestProbeRows.map((row) => Number(row.id)).filter((id) => id > 0);
+  const latestProbes = latestProbeIds.length === 0 ? [] : await db.select({
+    id: schema.probeLogs.id,
+    tokenId: schema.probeLogs.tokenId,
+    accountId: schema.probeLogs.accountId,
+    modelName: schema.probeLogs.modelName,
+    status: schema.probeLogs.status,
+    latencyMs: schema.probeLogs.latencyMs,
+    tokensUsed: schema.probeLogs.tokensUsed,
+    estimatedCost: schema.probeLogs.estimatedCost,
+    errorMessage: schema.probeLogs.errorMessage,
+    questionCategory: schema.probeLogs.questionCategory,
+    createdAt: schema.probeLogs.createdAt,
+  }).from(schema.probeLogs).where(inArray(schema.probeLogs.id, latestProbeIds))
+    .orderBy(desc(schema.probeLogs.id)).all();
+  const latestProbeByCell = new Map(latestProbes.map((probe) => [
+    probe.tokenId != null
+      ? `token:${probe.tokenId}:${probe.modelName.toLowerCase()}`
+      : `account:${probe.accountId}:${probe.modelName.toLowerCase()}`,
+    probe,
+  ]));
+  const disabledRows = await db.select({
+    siteId: schema.siteDisabledModels.siteId,
+    accountId: schema.siteDisabledModels.accountId,
+    tokenId: schema.siteDisabledModels.tokenId,
+    modelName: schema.siteDisabledModels.modelName,
+    source: schema.siteDisabledModels.source,
+  }).from(schema.siteDisabledModels).all();
+  const tokenMetaById = new Map(tokenMetaRows.map((row) => [row.tokenId, row]));
+  const candidateRows = [...keyRows];
+  const candidateCells = new Set(candidateRows.map((row) => `${row.tokenId}:${String(row.modelName).toLowerCase()}`));
+  const addCandidate = (tokenId: number, modelName: string) => {
+    const meta = tokenMetaById.get(tokenId);
+    const displayModelName = models.find((known) => matchesDisabledModelName(modelName, known));
+    const cell = `${tokenId}:${(displayModelName || modelName).toLowerCase()}`;
+    if (!meta || candidateCells.has(cell) || !displayModelName) return;
+    candidateCells.add(cell);
+    candidateRows.push({
+      ...meta,
+      modelName: displayModelName,
+      available: null,
+      connectivity: null,
+      latencyMs: null,
+      checkedAt: null,
+    });
+  };
+  for (const row of disabledRows) {
+    if (row.tokenId && row.tokenId > 0) {
+      const tokenMeta = tokenMetaById.get(row.tokenId);
+      if (!tokenMeta || tokenMeta.siteId !== row.siteId || (row.accountId != null && tokenMeta.accountId !== row.accountId)) continue;
+      addCandidate(row.tokenId, row.modelName);
+      continue;
+    }
+    for (const meta of tokenMetaRows) {
+      if (row.accountId != null && row.accountId !== meta.accountId) continue;
+      if (row.siteId !== meta.siteId) continue;
+      addCandidate(meta.tokenId, row.modelName);
+    }
+  }
+  for (const probe of latestProbes) {
+    if (probe.tokenId != null) addCandidate(probe.tokenId, probe.modelName);
+  }
+  const attachKeyDetails = (row: typeof candidateRows[number]) => {
+    const modelName = String(row.modelName || '');
+    const matchingDisables = disabledRows.filter((item) => (
+      (item.siteId === row.siteId)
+      && (item.accountId == null || item.accountId === row.accountId)
+      && (item.tokenId === 0 || item.tokenId === row.tokenId)
+      && matchesDisabledModelName(String(item.modelName || ''), modelName)
+    ));
+    const disable = matchingDisables.find((item) => item.source === 'manual' || item.source === 'policy')
+      ?? matchingDisables[0];
+    const probe = latestProbeByCell.get(`token:${row.tokenId}:${modelName.toLowerCase()}`) ?? null;
+    const routeState = disable?.source === 'policy'
+      ? 'policy-disabled'
+      : disable?.source === 'manual'
+        ? 'manual-disabled'
+      : disable ? 'probe-disabled'
+        : row.available === true ? 'available'
+          : row.available === false ? 'unavailable' : 'unknown';
+    return {
+      keyId: row.tokenId,
+      keyName: row.keyName,
+      keyGroup: row.keyGroup,
+      accountId: row.accountId,
+      accountName: row.accountName,
+      siteId: row.siteId,
+      siteName: row.siteName,
+      platform: row.platform,
+      available: row.available,
+      connectivity: row.connectivity,
+      availabilityLatencyMs: row.latencyMs,
+      availabilityCheckedAt: row.checkedAt,
+      routeState,
+      lastProbe: probe,
+      recentCalls: keyUsage.get(`${row.accountId}:${row.tokenId}:${modelName.toLowerCase()}`) || 0,
+    };
+  };
+  const detailsByModel = new Map<string, ReturnType<typeof attachKeyDetails>[]>();
+  for (const row of candidateRows) {
+    const key = String(row.modelName || '').toLowerCase();
+    const rows = detailsByModel.get(key) ?? [];
+    rows.push(attachKeyDetails(row));
+    detailsByModel.set(key, rows);
+  }
+  for (const row of accountOnlyRows) {
+    const key = String(row.modelName || '').toLowerCase();
+    const rows = detailsByModel.get(key) ?? [];
+    rows.push({
+      keyId: null,
+      keyName: '账号级凭据',
+      keyGroup: null,
+      accountId: row.accountId,
+      accountName: row.accountName,
+      siteId: row.siteId,
+      siteName: row.siteName,
+      platform: row.platform,
+      available: row.available,
+      connectivity: row.connectivity,
+      availabilityLatencyMs: row.latencyMs,
+      availabilityCheckedAt: row.checkedAt,
+      routeState: row.available === true ? 'available' : row.available === false ? 'unavailable' : 'unknown',
+      lastProbe: latestProbeByCell.get(`account:${row.accountId}:${String(row.modelName || '').toLowerCase()}`) ?? null,
+      recentCalls: accountUsage.get(`${row.accountId}:${String(row.modelName || '').toLowerCase()}`) || 0,
+    });
+    detailsByModel.set(key, rows);
+  }
   return {
     intervals: [...MODEL_PROBE_INTERVALS_HOURS],
     models: models.map((modelName) => {
@@ -105,6 +345,11 @@ export async function getModelProbePlan() {
         intervalHours: override ?? getDefaultProbeIntervalHours(modelName, recentCalls),
         automaticIntervalHours: getDefaultProbeIntervalHours(modelName, recentCalls),
         overridden: override !== null,
+        keyResults: (detailsByModel.get(modelName.toLowerCase()) ?? []).sort((a, b) => (
+          String(a.siteName || '').localeCompare(String(b.siteName || ''))
+          || String(a.accountName || '').localeCompare(String(b.accountName || ''))
+          || String(a.keyName || '').localeCompare(String(b.keyName || ''))
+        )),
       };
     }).sort((a, b) => a.type.localeCompare(b.type) || a.modelName.localeCompare(b.modelName)),
   };

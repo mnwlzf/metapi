@@ -999,6 +999,31 @@ export const api = {
       intervalHours: number;
       automaticIntervalHours: number;
       overridden: boolean;
+      keyResults: Array<{
+        keyId: number | null;
+        keyName: string;
+        keyGroup: string | null;
+        accountId: number;
+        accountName: string | null;
+        siteId: number;
+        siteName: string;
+        platform: string;
+        available: boolean | null;
+        connectivity: boolean | null;
+        availabilityLatencyMs: number | null;
+        availabilityCheckedAt: string | null;
+        routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
+        recentCalls: number;
+        lastProbe: {
+          status: string;
+          latencyMs: number | null;
+          tokensUsed: number | null;
+          estimatedCost: number | null;
+          errorMessage: string | null;
+          questionCategory: string;
+          createdAt: string | null;
+        } | null;
+      }>;
     }>;
   }>,
   setModelProbeInterval: (modelName: string, intervalHours: number | null) =>
