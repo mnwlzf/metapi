@@ -766,9 +766,9 @@ export default function Sites() {
             // the probe could not confirm is disabled (and heals on a later pass).
             if (disabledCount > 0) {
               const parts: string[] = [];
-              if (unsupportedCount > 0) parts.push(`${unsupportedCount} 个不可用`);
-              if (inconclusiveCount > 0) parts.push(`${inconclusiveCount} 个未确认可用（超时/异常）`);
-              addLog(`完成：${d.probed} 个模型已探测，${parts.join('，')}，均已加入禁用列表（只有确认可用的才会保留）`, 'var(--color-danger)');
+              if (unsupportedCount > 0) parts.push(`${unsupportedCount} ${tr('个不可用')}`);
+              if (inconclusiveCount > 0) parts.push(`${inconclusiveCount} ${tr('个未确认可用（超时/异常）')}`);
+              addLog(`${tr('完成')}：${d.probed} ${tr('个模型已探测')}，${parts.join(tr('，'))}，${tr('均已加入禁用列表（只有确认可用的才会保留）')}`, 'var(--color-danger)');
               toast.error(`${disabledCount} 个模型未确认可用，已加入禁用列表；之后探测成功会自动恢复`);
             } else {
               addLog(`完成：${d.probed} 个模型均可用`, 'var(--color-success)');

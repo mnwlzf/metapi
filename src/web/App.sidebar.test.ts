@@ -22,9 +22,9 @@ describe('App sidebar config', () => {
   it('places downstream key navigation under 控制台 instead of 系统', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8');
     // Trailing newline keeps the breadcrumb map entry out of this match.
-    const consoleGroupIndex = source.indexOf("label: '控制台',\n");
+    const consoleGroupIndex = source.indexOf("label: tr('控制台'),\n");
     const downstreamIndex = source.indexOf("{ to: '/downstream-keys', label: '下游密钥'");
-    const systemGroupIndex = source.indexOf("label: '系统',\n");
+    const systemGroupIndex = source.indexOf("label: tr('系统'),\n");
 
     expect(consoleGroupIndex).toBeGreaterThanOrEqual(0);
     expect(systemGroupIndex).toBeGreaterThanOrEqual(0);

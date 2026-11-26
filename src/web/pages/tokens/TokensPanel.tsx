@@ -1242,7 +1242,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, siteId:
           </button>
         </>
       )}
-      {/* Mobile keeps this inside the "同步与筛选" drawer instead of crowding the header. */}
+      {/* Mobile keeps this inside the sync/filter drawer instead of crowding the header. */}
       {isMobile ? null : (
         <button
           onClick={handleRefreshGroups}

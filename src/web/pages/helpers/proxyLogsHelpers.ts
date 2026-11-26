@@ -300,7 +300,7 @@ export function formatBillingDetailSummary(log: ProxyLogRenderItem) {
     if (Math.abs(computed - detail.quota.amount) > 1e-9) {
       parts.push(`本地推演 $${computed.toFixed(6)}`);
     }
-    if (sub2api) parts.push('sub2api 按站点单价 × 分组倍率结算');
+    if (sub2api) parts.push(tr('sub2api 按站点单价 × 分组倍率结算'));
     return parts.join('，');
   }
 
@@ -312,11 +312,11 @@ export function formatBillingDetailSummary(log: ProxyLogRenderItem) {
   // table, so show the basis that actually produced the number.
   if (basis === 'sub2api-per-token' && detail.perToken) {
     const t = detail.perToken;
-    return `站点单价 提示 $${formatCompactNumber(t.inputPerMillion)}/1M × 分组倍率 ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.inputPerMillion)}/1M，补全 $${formatCompactNumber(t.outputPerMillion)}/1M × ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.outputPerMillion)}/1M（本地估算）`;
+        return `${tr('站点单价')} ${tr('提示')} $${formatCompactNumber(t.inputPerMillion)}/1M × ${tr('分组倍率')} ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.inputPerMillion)}/1M，${tr('补全')} $${formatCompactNumber(t.outputPerMillion)}/1M × ${formatCompactNumber(t.groupRate)} = $${formatCompactNumber(detail.breakdown.outputPerMillion)}/1M${tr('（本地估算）')}`;
   }
 
-  if (!ratioText) return `本地估算 $${(detail.computedTotalCost ?? detail.breakdown.totalCost).toFixed(6)}（实际以站点扣费为准）`;
-  return `${ratioText}（本地估算${sub2api ? '，sub2api 站点口径不同，仅供参考' : ''}）`;
+    if (!ratioText) return `${tr('本地估算')} $${(detail.computedTotalCost ?? detail.breakdown.totalCost).toFixed(6)}${tr('（实际以站点扣费为准）')}`;
+    return `${ratioText}${tr('（本地估算）')}${sub2api ? tr('，sub2api 站点口径不同，仅供参考') : ''}`;
 }
 
 /**
@@ -411,7 +411,7 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
       `提示 ${detail.usage.billablePromptTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.inputPerMillion)}`
         + ` + 补全 ${detail.usage.completionTokens.toLocaleString()} tokens / 1M tokens * $${perMillion(detail.breakdown.outputPerMillion)}`
         + ` = $${detail.breakdown.totalCost.toFixed(6)}`,
-      '本地估算，实际以站点扣费为准',
+      tr('本地估算，实际以站点扣费为准'),
     );
     return lines;
   }
@@ -455,8 +455,8 @@ export function buildBillingProcessLines(log: ProxyLogRenderItem) {
   lines.push(parts.join(' + '));
   lines.push(
     detail.platform === 'sub2api'
-      ? '本地估算：sub2api 站点按站点单价 × 分组倍率计费，上表为本地倍率推演，实际以站点扣费为准'
-      : '本地估算，实际以站点扣费为准',
+      ? tr('本地估算：sub2api 站点按站点单价 × 分组倍率计费，上表为本地倍率推演，实际以站点扣费为准')
+      : tr('本地估算，实际以站点扣费为准'),
   );
 
   return lines;
