@@ -11,10 +11,8 @@ import { PillTabBg } from '../components/PillTabBg.js';
 import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import ChartLoadingState from '../components/charts/ChartLoadingState.js';
 import { tr } from '../i18n.js';
+const ConsumptionPanel = lazy(() => import('./consumption/ConsumptionPanel.js'));
 
-const ModelAnalysisPanel = lazy(
-  () => import('../components/ModelAnalysisPanel.js'),
-);
 const SiteDistributionChart = lazy(
   () => import('../components/charts/SiteDistributionChart.js'),
 );
@@ -731,6 +729,7 @@ export default function Dashboard({
 
       
 
+      <Suspense fallback={<ChartFallback height={240} />}><ConsumptionPanel compact /></Suspense>
       <div className="dashboard-stat-grid">
         <div className="stat-card animate-slide-up stagger-1">
           <div className="stat-card-header">
@@ -770,14 +769,14 @@ export default function Dashboard({
               </svg>
             </div>
             <div className="dashboard-stat-content">
-              <div className="stat-label">{tr('累计消耗')}</div>
+              <div className="stat-label">上游累计实际消费（周期由上游定义）</div>
               <div className="stat-value animate-count-up">
-                ${totalUsed.toFixed(2)}
+                {data?.totalUsed == null ? '待同步' : `$${totalUsed.toFixed(2)}`}
                 <span
                   className="dashboard-stat-inline"
                   style={{ color: todaySpend > 0 ? 'var(--color-danger)' : 'var(--color-text-muted)' }}
                 >
-                  {tr('（今日 -')}{todaySpend.toFixed(2)}{tr('）')}
+                  {tr('（今日 -')}{data?.todaySpend == null ? '待同步' : todaySpend.toFixed(2)}{tr('）')}
                 </span>
               </div>
             </div>
@@ -823,8 +822,8 @@ export default function Dashboard({
               </svg>
             </div>
             <div className="dashboard-stat-content">
-              <div className="stat-label">{tr('今日消耗')}</div>
-              <div className="stat-value animate-count-up">${todaySpend.toFixed(2)}</div>
+              <div className="stat-label">今日上游实际消费{data?.actualCostCoverage && data.actualCostCoverage.covered < data.actualCostCoverage.expected ? `（已同步 ${data.actualCostCoverage.covered}/${data.actualCostCoverage.expected}）` : ''}</div>
+              <div className="stat-value animate-count-up">{data?.todaySpend == null ? '待同步' : `$${todaySpend.toFixed(2)}`}</div>
             </div>
             <StatSparkline values={dailySpendSeries} color="var(--color-warning)" />
           </div>
@@ -1380,7 +1379,7 @@ export default function Dashboard({
             ) : (
               <ErrorBoundary compact>
                 <Suspense fallback={<ChartFallback height={300} />}>
-                  <ModelAnalysisPanel data={insightsData?.modelAnalysis} />
+                  <Link to="/consumption?view=models">查看上游模型实际消费分析 →</Link>
                 </Suspense>
               </ErrorBoundary>
             )}

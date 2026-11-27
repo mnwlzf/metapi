@@ -24,7 +24,7 @@ function looksLikeDetectableSiteUrl(raw: string): boolean {
     return false;
   }
 }
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   DndContext,
   KeyboardSensor,
@@ -113,7 +113,8 @@ type SiteRow = {
   totalBalance?: number;
   totalBalanceUsed?: number;
   todayReward?: number;
-  todaySpend?: number;
+  todaySpend?: number | null;
+  actualCostCoverage?: { covered: number; expected: number; updatedAt?: string | null } | null;
   subscriptionSummary?: SiteSubscriptionSummary | null;
   healthState?: {
     state: 'healthy' | 'unhealthy' | 'degraded' | 'unknown' | 'disabled';
@@ -2040,6 +2041,8 @@ export default function Sites() {
                     )}
                     footerActions={(
                       <>
+                        <Link className="btn btn-link btn-link-primary" to={`/consumption?siteId=${site.id}`}>消费分析</Link>
+                        <Link className="btn btn-link btn-link-primary" to={`/settings?tab=consumption&siteId=${site.id}`}>采集设置</Link>
                         <button
                           type="button"
                           onClick={() => navigate(`/sites/${site.id}`, { state: { fromSearch: location.search } })}
@@ -2092,7 +2095,7 @@ export default function Sites() {
                         <SiteBalanceDisplay
                           balance={site.totalBalance}
                           todayReward={site.todayReward}
-                          todaySpend={site.todaySpend}
+                          todaySpend={site.todaySpend} actualCostCoverage={site.actualCostCoverage}
                           summary={site.subscriptionSummary}
                           align="end"
                         />
@@ -2291,9 +2294,10 @@ export default function Sites() {
                       <SiteBalanceDisplay
                         balance={site.totalBalance}
                         todayReward={site.todayReward}
-                        todaySpend={site.todaySpend}
+                        todaySpend={site.todaySpend} actualCostCoverage={site.actualCostCoverage}
                         summary={site.subscriptionSummary}
                       />
+                      <div className="consumption-actions" style={{ fontSize: 11, marginTop: 5 }}><Link to={`/consumption?siteId=${site.id}`}>消费分析</Link><Link to={`/settings?tab=consumption&siteId=${site.id}`}>采集设置</Link></div>
                     </td>
                     <td>
                       <StatusPill badgeClass={site.status === 'disabled' ? 'badge-muted' : 'badge-success'} style={{ fontSize: 11 }}>

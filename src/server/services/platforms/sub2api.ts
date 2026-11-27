@@ -14,6 +14,8 @@ import {
 } from './base.js';
 import { withSiteProxyRequestInit } from '../siteProxy.js';
 import { stripTrailingSlashes } from '../urlNormalization.js';
+import { parseUsageKeys, parseUsageModels, parseUsageStats, UsageDashboardError } from './usageDashboard.js';
+import { withManagementRequestTimeout } from './upstreamRequestTimeout.js';
 
 function normalizeBaseUrl(baseUrl: string): string {
   return stripTrailingSlashes(baseUrl || '');
@@ -32,6 +34,46 @@ const SUB2API_GROUP_CATALOG_MAX_PAGES = 20;
  */
 export class Sub2ApiAdapter extends BasePlatformAdapter {
   readonly platformName = 'sub2api';
+
+  async getUsageKeyCatalog(baseUrl: string, accessToken: string): Promise<ApiTokenInfo[]> {
+    const endpoint = '/api/v1/keys?page=1&page_size=100';
+    const response = await this.fetchUsageEndpoint(baseUrl, accessToken, endpoint);
+    return this.parseTokenItems(response).map((item) => ({
+      upstreamId: item.id, name: item.name, key: item.key, enabled: item.enabled, tokenGroup: item.tokenGroup,
+    }));
+  }
+
+  private async fetchUsageEndpoint(baseUrl: string, accessToken: string, endpoint: string): Promise<unknown> {
+    const { fetch } = await import('undici');
+    const url = `${this.resolveManagementBaseUrl(baseUrl)}${endpoint}`;
+    const response = await fetch(url, await withSiteProxyRequestInit(url, withManagementRequestTimeout({
+      headers: this.buildAuthHeader(accessToken),
+    })));
+    if (!response.ok) {
+      const retry = response.headers.get('retry-after');
+      const seconds = retry && /^\d+(\.\d+)?$/.test(retry) ? Number(retry) * 1000 : Date.parse(retry || '') - Date.now();
+      await response.body?.cancel();
+      throw new UsageDashboardError(response.status, Math.max(0, Number.isFinite(seconds) ? seconds : 0));
+    }
+    return this.parseSub2ApiEnvelope<unknown>(await response.json(), endpoint);
+  }
+
+  async getUsageDashboard(baseUrl: string, accessToken: string, input: {
+    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string;
+  }) {
+    const endpoint = `/api/v1/usage/dashboard/${input.kind === 'keys' ? 'api-keys-usage' : input.kind}`;
+    const query = new URLSearchParams({ timezone: input.timeZone });
+    if (input.kind === 'models') {
+      query.set('start_date', input.day);
+      query.set('end_date', input.day);
+    }
+    const data = await this.fetchUsageEndpoint(baseUrl, accessToken, `${endpoint}?${query}`);
+    if (input.kind === 'stats') return parseUsageStats(data);
+    if (input.kind === 'keys') return parseUsageKeys(data);
+    const range = data as { start_date?: string; end_date?: string };
+    if (range.start_date !== input.day || range.end_date !== input.day) throw new Error('上游返回的模型统计日期与请求不一致');
+    return parseUsageModels(data);
+  }
 
   private roundCurrency(value: number): number {
     return Math.round(value * 1_000_000) / 1_000_000;

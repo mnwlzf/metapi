@@ -23,6 +23,7 @@ import CenteredModal from './components/CenteredModal.js';
 // Stored default profile name: compared against, never translated.
 const DEFAULT_PROFILE_NAME = '管理员';
 const Dashboard = lazy(() => import('./pages/Dashboard.js'));
+const Consumption = lazy(() => import('./pages/Consumption.js'));
 const Sites = lazy(() => import('./pages/Sites.js'));
 const SiteDetail = lazy(() => import('./pages/SiteDetail.js'));
 const CheckinLog = lazy(() => import('./pages/CheckinLog.js'));
@@ -901,6 +902,7 @@ function AppShell() {
             <Suspense fallback={<RouteLoadingFallback />}>
               <Routes>
                 <Route path="/" element={<Dashboard adminName={displayName} />} />
+                <Route path="/consumption" element={<Consumption />} />
                 <Route path="/sites" element={<Sites />} />
                 <Route path="/sites/:id" element={<SiteDetail />} />
                 <Route path="/site-announcements" element={<SiteAnnouncements />} />

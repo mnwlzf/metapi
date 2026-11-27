@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
-import { useLocation, useParams, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useParams, useNavigate } from 'react-router-dom';
 import { api } from '../api.js';
 import { useToast } from '../components/Toast.js';
 import { platformBadgeClass } from './sites/sitePresentation.js';
@@ -91,6 +91,7 @@ export default function SiteDetail() {
       </div>
 
       <Suspense fallback={<div style={{ textAlign: 'center', padding: '40px' }}>{tr('加载中...')}</div>}>
+        <div className="consumption-actions" style={{ marginBottom: 16 }}><Link className="btn btn-soft-primary" to={`/consumption?siteId=${site.id}`}>消费分析</Link><Link className="btn btn-ghost" to={`/settings?tab=consumption&siteId=${site.id}`}>消费采集设置</Link></div>
         <Accounts siteId={site.id} />
       </Suspense>
     </div>

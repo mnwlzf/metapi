@@ -1,6 +1,5 @@
-import { and, asc, desc, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, lt, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
-import { buildModelAnalysisFromDailyUsage } from './modelAnalysisService.js';
 import { parseCheckinRewardAmount } from './checkinRewardParser.js';
 import {
   formatUtcSqlDateTime,
@@ -19,11 +18,13 @@ import { estimateRewardWithTodayIncomeFallback } from './todayIncomeRewardServic
 import { createAdminSnapshotPersistence } from './adminSnapshotStore.js';
 import { runUsageAggregationProjectionPass } from './usageAggregationService.js';
 import { calculateProxyQualityMetrics } from './proxyQualityMetrics.js';
+import { getUpstreamModelAnalysis, getUsageFinancialSummary } from './usageFinancialSummary.js';
 
 export type DashboardSummaryPayload = {
   totalBalance: number;
-  totalUsed: number;
-  todaySpend: number;
+  totalUsed: number | null;
+  todaySpend: number | null;
+  actualCostCoverage?: { covered: number; expected: number };
   todayReward: number;
   activeAccounts: number;
   totalAccounts: number;
@@ -56,7 +57,7 @@ export type DashboardInsightsPayload = {
   modelAvailability: ReturnType<
     typeof buildModelAvailabilitySummaries
   >;
-  modelAnalysis: ReturnType<typeof buildModelAnalysisFromDailyUsage>;
+  modelAnalysis: Awaited<ReturnType<typeof getUpstreamModelAnalysis>>;
 };
 
 const DASHBOARD_SUMMARY_TTL_MS = 12_000;
@@ -64,12 +65,12 @@ const DASHBOARD_INSIGHTS_TTL_MS = 20_000;
 const SITE_AVAILABILITY_BUCKET_COUNT = 24;
 const dashboardSummaryPersistence =
   createAdminSnapshotPersistence<DashboardSummaryPayload>({
-    namespace: 'dashboard-summary',
+    namespace: 'dashboard-summary-actual-v1',
     key: 'default',
   });
 const dashboardInsightsPersistence =
   createAdminSnapshotPersistence<DashboardInsightsPayload>({
-    namespace: 'dashboard-insights',
+    namespace: 'dashboard-insights-actual-v1',
     key: 'default',
   });
 
@@ -101,11 +102,9 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
 
   const [
     todayCheckinRows,
-    totalUsedRow,
     proxy24hRow,
     proxyPerformanceRow,
     proxyQualityRows,
-    todaySpendRow,
   ] = await Promise.all([
     db
       .select()
@@ -123,14 +122,6 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
         ),
       )
       .all(),
-    db
-      .select({
-        totalUsed: sql<number>`coalesce(sum(coalesce(${schema.siteDayUsage.totalSiteSpend}, 0)), 0)`,
-      })
-      .from(schema.siteDayUsage)
-      .innerJoin(schema.sites, eq(schema.siteDayUsage.siteId, schema.sites.id))
-      .where(eq(schema.sites.status, 'active'))
-      .get(),
     db
       .select({
         total: sql<number>`count(*)`,
@@ -190,19 +181,6 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
       .orderBy(desc(schema.proxyLogs.createdAt))
       .limit(5000)
       .all(),
-    db
-      .select({
-        todaySpend: sql<number>`coalesce(sum(coalesce(${schema.siteDayUsage.totalSiteSpend}, 0)), 0)`,
-      })
-      .from(schema.siteDayUsage)
-      .innerJoin(schema.sites, eq(schema.siteDayUsage.siteId, schema.sites.id))
-      .where(
-        and(
-          eq(schema.siteDayUsage.localDay, today),
-          eq(schema.sites.status, 'active'),
-        ),
-      )
-      .get(),
   ]);
 
   // Site-level checkin stats: one site counts once today.
@@ -253,8 +231,6 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
   const requestsPerMinute = Number(proxyPerformanceRow?.total || 0);
   const tokensPerMinute = Number(proxyPerformanceRow?.totalTokens || 0);
   const proxyQuality = calculateProxyQualityMetrics(proxyQualityRows);
-  const totalUsed = Number(totalUsedRow?.totalUsed || 0);
-  const todaySpend = Number(todaySpendRow?.todaySpend || 0);
   const todayReward = accounts.reduce(
     (sum: any, account: any) =>
       sum +
@@ -273,19 +249,7 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
   const trendSinceDay = getLocalRangeStartDayKey(6);
   const trendSinceUtc = new Date(Date.now() - 7 * 86400000)
     .toISOString().slice(0, 19).replace('T', ' ');
-  const [dailyTrendRows, dailyCheckinRows] = await Promise.all([
-    db
-      .select({
-        day: schema.modelDayUsage.localDay,
-        spend: sql<number>`coalesce(sum(${schema.modelDayUsage.totalSpend}), 0)`,
-        calls: sql<number>`coalesce(sum(${schema.modelDayUsage.totalCalls}), 0)`,
-        tokens: sql<number>`coalesce(sum(${schema.modelDayUsage.totalTokens}), 0)`,
-      })
-      .from(schema.modelDayUsage)
-      .where(gte(schema.modelDayUsage.localDay, trendSinceDay))
-      .groupBy(schema.modelDayUsage.localDay)
-      .orderBy(asc(schema.modelDayUsage.localDay))
-      .all(),
+  const [dailyCheckinRows] = await Promise.all([
     db
       .select({
         createdAt: schema.checkinLogs.createdAt,
@@ -296,10 +260,12 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
       .all(),
   ]);
 
+  const actual = await getUsageFinancialSummary();
   return {
     totalBalance,
-    totalUsed: toRoundedMicroNumber(totalUsed),
-    todaySpend: toRoundedMicroNumber(todaySpend),
+    totalUsed: actual.totalUsed,
+    todaySpend: actual.todaySpend,
+    actualCostCoverage: { covered: actual.covered, expected: actual.expected },
     todayReward: toRoundedMicroNumber(todayReward),
     activeAccounts: activeCount,
     totalAccounts: accounts.length,
@@ -308,12 +274,7 @@ async function loadDashboardSummaryPayload(): Promise<DashboardSummaryPayload> {
       failed: checkinFailed,
       total: checkinTotal,
     },
-    dailyTrend: dailyTrendRows.map((row: any) => ({
-      day: String(row.day || ''),
-      spend: toRoundedMicroNumber(Number(row.spend || 0)),
-      calls: Math.round(Number(row.calls || 0)),
-      tokens: Math.round(Number(row.tokens || 0)),
-    })),
+    dailyTrend: actual.dailyTrend.filter((row) => row.day >= trendSinceDay),
     dailyCheckin: (() => {
       // checkin_logs.created_at is stored UTC; dailyTrend uses local-day keys.
       // Bucketing the check-ins by the UTC date string shifted every check-in
@@ -358,10 +319,9 @@ async function loadDashboardInsightsPayload(): Promise<DashboardInsightsPayload>
     SITE_AVAILABILITY_BUCKET_COUNT,
     siteAvailabilityNow,
   );
-  const modelAnalysisSinceDay = getLocalRangeStartDayKey(1);
   await runUsageAggregationProjectionPass();
 
-  const [activeSites, siteAvailabilityRows, modelDayRows, modelAvailabilityLogs] =
+  const [activeSites, siteAvailabilityRows, modelAnalysis, modelAvailabilityLogs] =
     await Promise.all([
       db
         .select({
@@ -380,11 +340,7 @@ async function loadDashboardInsightsPayload(): Promise<DashboardInsightsPayload>
         .from(schema.siteHourUsage)
         .where(gte(schema.siteHourUsage.bucketStartUtc, siteAvailabilitySinceUtc))
         .all(),
-      db
-        .select()
-        .from(schema.modelDayUsage)
-        .where(gte(schema.modelDayUsage.localDay, modelAnalysisSinceDay))
-        .all(),
+      getUpstreamModelAnalysis(),
       db
         .select({
           modelActual: schema.proxyLogs.modelActual,
@@ -436,20 +392,7 @@ async function loadDashboardInsightsPayload(): Promise<DashboardInsightsPayload>
       })),
       siteAvailabilityNow,
     ),
-    modelAnalysis: buildModelAnalysisFromDailyUsage(
-      modelDayRows
-        .filter((row: any) => activeSiteIdSet.has(row.siteId))
-        .map((row: any) => ({
-          localDay: row.localDay,
-          model: row.model,
-          totalCalls: row.totalCalls,
-          successCalls: row.successCalls,
-          totalTokens: row.totalTokens,
-          totalSpend: row.totalSpend,
-          totalLatencyMs: row.totalLatencyMs,
-        })),
-      { days: 1 },
-    ),
+    modelAnalysis,
   };
 }
 
@@ -457,7 +400,7 @@ export async function getDashboardSummarySnapshot(options?: {
   forceRefresh?: boolean;
 }): Promise<SnapshotEnvelope<DashboardSummaryPayload>> {
   return readSnapshotCache({
-    namespace: 'dashboard-summary',
+    namespace: 'dashboard-summary-actual-v1',
     key: 'default',
     ttlMs: DASHBOARD_SUMMARY_TTL_MS,
     forceRefresh: options?.forceRefresh,
@@ -470,7 +413,7 @@ export async function getDashboardInsightsSnapshot(options?: {
   forceRefresh?: boolean;
 }): Promise<SnapshotEnvelope<DashboardInsightsPayload>> {
   return readSnapshotCache({
-    namespace: 'dashboard-insights',
+    namespace: 'dashboard-insights-actual-v1',
     key: 'default',
     ttlMs: DASHBOARD_INSIGHTS_TTL_MS,
     forceRefresh: options?.forceRefresh,

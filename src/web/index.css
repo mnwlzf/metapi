@@ -14,4 +14,5 @@
 @import "./styles/cards.css";
 @import "./styles/toolbar.css";
 @import "./styles/responsive.css";
+@import "./pages/consumption/consumption.css";
 

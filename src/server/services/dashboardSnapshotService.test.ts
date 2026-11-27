@@ -84,7 +84,9 @@ describe('dashboardSnapshotService', () => {
     expect(payload.activeAccounts).toBe(3); // a1, a2, a4 (a4 is on a disabled site but its account is active)
     expect(payload.totalAccounts).toBe(4); // all accounts, including disabled site's
 
-    expect(payload.todaySpend).toBe(1.5); // from site_day_usage
+    // Local request estimates cannot be presented as upstream account charges.
+    expect(payload.todaySpend).toBeNull();
+    expect(payload.actualCostCoverage).toEqual({ covered: 0, expected: 2 });
 
     // proxy24h excludes the disabled site.
     expect(payload.proxy24h.total).toBe(3);
@@ -106,7 +108,7 @@ describe('dashboardSnapshotService', () => {
     expect(payload.totalBalance).toBe(0);
     expect(payload.activeAccounts).toBe(0);
     expect(payload.totalAccounts).toBe(0);
-    expect(payload.todaySpend).toBe(0);
+    expect(payload.todaySpend).toBeNull();
     expect(payload.proxy24h.total).toBe(0);
     expect(payload.todayCheckin.total).toBe(0);
   });

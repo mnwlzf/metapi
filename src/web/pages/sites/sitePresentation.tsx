@@ -246,15 +246,16 @@ export function SiteBalanceDisplay(props: {
   balance?: number | null;
   todayReward?: number | null;
   todaySpend?: number | null;
+  actualCostCoverage?: { covered: number; expected: number; updatedAt?: string | null } | null;
   summary?: SiteSubscriptionSummary | null;
   align?: 'start' | 'end';
 }) {
-  const { balance, todayReward, todaySpend, summary, align = 'start' } = props;
+  const { balance, todayReward, todaySpend, actualCostCoverage, summary, align = 'start' } = props;
   const walletBalanceText = formatUsd(balance);
   const subscriptionValue = buildSubscriptionInlineValue(summary);
   const tooltip = buildSubscriptionTooltip(summary);
   const reward = todayReward || 0;
-  const spend = todaySpend || 0;
+  const spend = todaySpend;
 
   return (
     <div
@@ -280,11 +281,16 @@ export function SiteBalanceDisplay(props: {
           +{reward.toFixed(2)}
         </span>
       ) : null}
-      {spend > 0 ? (
+      {spend == null ? <span className="site-balance-spend" title="上游实际消费尚未同步">待同步</span> : spend > 0 ? (
         <span className="site-balance-spend" style={{ marginLeft: 4 }}>
           -{spend.toFixed(2)}
         </span>
       ) : null}
+      {actualCostCoverage && actualCostCoverage.covered < actualCostCoverage.expected && (
+        <small className="site-balance-spend" title="当前金额只包含已同步账号的上游实际消费，未同步部分不按零计算">
+          已同步 {actualCostCoverage.covered}/{actualCostCoverage.expected}
+        </small>
+      )}
     </div>
   );
 }

@@ -65,12 +65,12 @@ describe('peer overview route', () => {
     expect(payload.protocolVersion).toBe(1);
     expect(payload.site).toEqual({
       totalBalance: expect.any(Number),
-      totalUsed: expect.any(Number),
+      totalUsed: null,
       activeAccounts: expect.any(Number),
       totalAccounts: expect.any(Number),
     });
     expect(payload.today).toEqual({
-      spend: expect.any(Number),
+      spend: null,
       reward: expect.any(Number),
       checkin: expect.any(Object),
     });

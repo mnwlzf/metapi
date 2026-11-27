@@ -1,7 +1,8 @@
 import { FastifyInstance, FastifyReply } from 'fastify';
+import { getUsageFinancialSummary } from '../../services/usageFinancialSummary.js';
 import { db, schema } from '../../db/index.js';
 import { getInsertedRowId } from '../../db/insertHelpers.js';
-import { and, asc, eq, inArray, gte, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, gte, lt } from 'drizzle-orm';
 import { detectSite } from '../../services/siteDetector.js';
 import { invalidateSiteProxyCache, parseSiteProxyUrlInput } from '../../services/siteProxy.js';
 import { formatUtcSqlDateTime, getLocalDayRangeUtc } from '../../services/localTimeService.js';
@@ -567,14 +568,8 @@ export async function sitesRoutes(app: FastifyInstance) {
 
     // 获取今日消费和签到奖励（按账号聚合，后面再按站点汇总）
     const { localDay, startUtc, endUtc } = getLocalDayRangeUtc();
-    const [todaySpendRows, todayCheckinRows] = await Promise.all([
-      db.select({
-        accountId: schema.proxyLogs.accountId,
-        totalSpend: sql<number>`coalesce(sum(${schema.proxyLogs.estimatedCost}), 0)`,
-      }).from(schema.proxyLogs)
-        .where(and(gte(schema.proxyLogs.createdAt, startUtc), lt(schema.proxyLogs.createdAt, endUtc)))
-        .groupBy(schema.proxyLogs.accountId)
-        .all(),
+    const [actualFinance, todayCheckinRows] = await Promise.all([
+      getUsageFinancialSummary(),
       db.select({
         accountId: schema.checkinLogs.accountId,
         reward: schema.checkinLogs.reward,
@@ -584,11 +579,6 @@ export async function sitesRoutes(app: FastifyInstance) {
         .all(),
     ]);
 
-    const spendByAccount: Record<number, number> = {};
-    for (const row of todaySpendRows) {
-      if (row.accountId == null) continue;
-      spendByAccount[row.accountId] = Number(row.totalSpend || 0);
-    }
 
     const rewardByAccount: Record<number, number> = {};
     for (const log of todayCheckinRows) {
@@ -603,7 +593,6 @@ export async function sitesRoutes(app: FastifyInstance) {
     const totalBalanceBySiteId: Record<number, number> = {};
     const totalBalanceUsedBySiteId: Record<number, number> = {};
     const totalTodayRewardBySiteId: Record<number, number> = {};
-    const totalTodaySpendBySiteId: Record<number, number> = {};
     const subscriptionBySiteId: Record<number, SiteSubscriptionAggregate | undefined> = {};
     const accountCountBySiteId: Record<number, number> = {};
     const sessionCountBySiteId: Record<number, number> = {};
@@ -620,7 +609,6 @@ export async function sitesRoutes(app: FastifyInstance) {
       const todayIncome = getTodayIncomeValue(row.extraConfig, localDay);
       const accountReward = Math.max(rewardByAccount[row.id] || 0, todayIncome);
       totalTodayRewardBySiteId[row.siteId] = roundMetric((totalTodayRewardBySiteId[row.siteId] || 0) + accountReward);
-      totalTodaySpendBySiteId[row.siteId] = roundMetric((totalTodaySpendBySiteId[row.siteId] || 0) + (spendByAccount[row.id] || 0));
       subscriptionBySiteId[row.siteId] = aggregateSiteSubscription(subscriptionBySiteId[row.siteId], row.extraConfig);
       accountCountBySiteId[row.siteId] = (accountCountBySiteId[row.siteId] || 0) + 1;
       {
@@ -702,7 +690,8 @@ export async function sitesRoutes(app: FastifyInstance) {
       totalBalance: Math.round((totalBalanceBySiteId[site.id] || 0) * 1_000_000) / 1_000_000,
       totalBalanceUsed: Math.round((totalBalanceUsedBySiteId[site.id] || 0) * 1_000_000) / 1_000_000,
       todayReward: Math.round((totalTodayRewardBySiteId[site.id] || 0) * 1_000_000) / 1_000_000,
-      todaySpend: Math.round((totalTodaySpendBySiteId[site.id] || 0) * 1_000_000) / 1_000_000,
+      todaySpend: actualFinance.sites[site.id]?.amount ?? null,
+      actualCostCoverage: actualFinance.sites[site.id] ?? null,
       subscriptionSummary: subscriptionBySiteId[site.id] || null,
       healthState: siteHealthState[site.id] ?? {
         state: 'unknown', reason: '尚未检测', source: 'none', checkedAt: null,

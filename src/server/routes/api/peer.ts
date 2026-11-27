@@ -49,12 +49,12 @@ export async function peerRoutes(app: FastifyInstance) {
       protocolVersion: PEER_PROTOCOL_VERSION,
       site: {
         totalBalance: roundMicro(payload.totalBalance),
-        totalUsed: roundMicro(payload.totalUsed),
+        totalUsed: payload.totalUsed == null ? null : roundMicro(payload.totalUsed),
         activeAccounts: payload.activeAccounts,
         totalAccounts: payload.totalAccounts,
       },
       today: {
-        spend: roundMicro(payload.todaySpend),
+        spend: payload.todaySpend == null ? null : roundMicro(payload.todaySpend),
         reward: roundMicro(payload.todayReward),
         checkin: payload.todayCheckin,
       },

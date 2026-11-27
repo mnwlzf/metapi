@@ -173,7 +173,7 @@ describe('stats dashboard today reward fallback', () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json() as { todaySpend: number };
-    expect(body.todaySpend).toBe(3);
+    expect(body.todaySpend).toBeNull();
   });
 
   it('repairs ISO timestamps for dashboard today spend filtering', async () => {
@@ -208,6 +208,6 @@ describe('stats dashboard today reward fallback', () => {
 
     expect(response.statusCode).toBe(200);
     const body = response.json() as { todaySpend: number };
-    expect(body.todaySpend).toBe(6.4);
+    expect(body.todaySpend).toBeNull();
   });
 });

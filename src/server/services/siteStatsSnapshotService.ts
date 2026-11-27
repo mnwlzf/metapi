@@ -1,21 +1,14 @@
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
-import {
-  getLocalHourRangeStartUtc,
-  getLocalRangeStartDayKey,
-  toLocalHourLabelFromStoredUtc,
-} from './localTimeService.js';
+import { shiftUsageDay } from './usageCollectionPolicy.js';
 import {
   readSnapshotCache,
   type SnapshotEnvelope,
 } from './snapshotCacheService.js';
-import {
-  toRoundedMicroNumber,
-} from './statsShared.js';
 import { createAdminSnapshotPersistence } from './adminSnapshotStore.js';
-import {
-  runUsageAggregationProjectionPass,
-} from './usageAggregationService.js';
+import { getUsageOverview } from './usageCollectionService.js';
+import { summarizeUsageFinances } from './usageFinancialSummary.js';
+import type { UsageModel } from '../shared/upstreamUsage.js';
 
 export type SiteStatsSnapshotPayload = {
   distribution: Array<{
@@ -23,8 +16,8 @@ export type SiteStatsSnapshotPayload = {
     siteName: string;
     platform: string | null;
     totalBalance: number;
-    totalSpend: number;
-    todaySpend: number;
+    totalSpend: number | null;
+    todaySpend: number | null;
     accountCount: number;
   }>;
   trend: Array<{
@@ -40,136 +33,38 @@ const SITE_STATS_TTL_MS = 15_000;
 async function loadSiteStatsSnapshotPayload(
   days: number,
 ): Promise<SiteStatsSnapshotPayload> {
-  // Short windows (1-3 days) switch to hourly buckets so the trend line has
-  // enough samples; longer windows stay daily.
-  const useHourly = days <= 3;
-  const sinceDay = getLocalRangeStartDayKey(days);
-  const sinceHourUtc = getLocalHourRangeStartUtc(days * 24);
-  await runUsageAggregationProjectionPass();
-
-  const [spendRows, trendRows, todaySpendRows, sites, accountDistributionRows] =
-    await Promise.all([
-    db
-      .select({
-        siteId: schema.siteDayUsage.siteId,
-        totalSpend: sql<number>`coalesce(sum(${schema.siteDayUsage.totalSiteSpend}), 0)`,
-      })
-      .from(schema.siteDayUsage)
-      .groupBy(schema.siteDayUsage.siteId)
-      .all(),
-    useHourly
-      ? db
-          .select()
-          .from(schema.siteHourUsage)
-          .where(sql`${schema.siteHourUsage.bucketStartUtc} >= ${sinceHourUtc}`)
-          .all()
-      : db
-          .select()
-          .from(schema.siteDayUsage)
-          .where(sql`${schema.siteDayUsage.localDay} >= ${sinceDay}`)
-          .all(),
-    // Today's spend = usage for the current local day only.
-    db
-      .select({
-        siteId: schema.siteDayUsage.siteId,
-        todaySpend: sql<number>`coalesce(sum(${schema.siteDayUsage.totalSiteSpend}), 0)`,
-      })
-      .from(schema.siteDayUsage)
-      .where(eq(schema.siteDayUsage.localDay, getLocalRangeStartDayKey(1)))
-      .groupBy(schema.siteDayUsage.siteId)
-      .all(),
-    db
-      .select()
-      .from(schema.sites)
-      .where(eq(schema.sites.status, 'active'))
-      .all(),
-    db
-      .select({
-        siteId: schema.sites.id,
-        siteName: schema.sites.name,
-        platform: schema.sites.platform,
-        totalBalance: sql<number>`coalesce(sum(coalesce(${schema.accounts.balance}, 0)), 0)`,
-        accountCount: sql<number>`count(*)`,
-      })
-      .from(schema.accounts)
-      .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-      .where(eq(schema.sites.status, 'active'))
-      .groupBy(schema.sites.id, schema.sites.name, schema.sites.platform)
-      .all(),
-  ]);
-
-  const spendBySiteId = new Map<number, number>();
-  for (const row of spendRows) {
-    if (row.siteId == null) continue;
-    spendBySiteId.set(row.siteId, Number(row.totalSpend || 0));
-  }
-
-  const todaySpendBySiteId = new Map<number, number>();
-  for (const row of todaySpendRows) {
-    if (row.siteId == null) continue;
-    todaySpendBySiteId.set(row.siteId, Number(row.todaySpend || 0));
-  }
-
-  const distribution = accountDistributionRows.map((row: any) => {
-    const totalSpend = spendBySiteId.get(row.siteId) || 0;
+  const overview = await getUsageOverview();
+  const actual = summarizeUsageFinances(overview);
+  const sinceDay = shiftUsageDay(overview.today, -(days - 1));
+  const sites = await db.select().from(schema.sites).where(eq(schema.sites.status, 'active')).all();
+  const eligible = overview.accounts.filter((account) => !account.duplicateOf);
+  const distribution = sites.map((site: typeof schema.sites.$inferSelect) => {
+    const accounts = eligible.filter((account) => account.siteId === site.id);
+    const values = overview.records.filter((row) => accounts.some((account) => account.accountId === row.accountId) && row.kind === 'models' && row.day >= sinceDay);
+    const spend = values.flatMap((row) => row.data as UsageModel[]).reduce((sum, row) => sum + (row.actualCost ?? 0), 0);
     return {
-      siteId: row.siteId,
-      siteName: row.siteName,
-      platform: row.platform,
-      totalBalance: toRoundedMicroNumber(Number(row.totalBalance || 0)),
-      totalSpend: toRoundedMicroNumber(totalSpend),
-      todaySpend: toRoundedMicroNumber(todaySpendBySiteId.get(row.siteId) || 0),
-      accountCount: Number(row.accountCount || 0),
+      siteId: site.id, siteName: site.name, platform: site.platform,
+      totalBalance: accounts.reduce((sum, account) => sum + (account.balance ?? 0), 0),
+      totalSpend: values.length && values.length === accounts.length * days ? spend : null,
+      todaySpend: actual.sites[site.id]?.covered === accounts.length ? actual.sites[site.id]?.amount ?? null : null, accountCount: accounts.length,
     };
   });
-
-  const siteFrame: Record<
-    string,
-    Record<string, { spend: number; calls: number }>
-  > = {};
-  const activeSiteById = new Map<number, (typeof schema.sites.$inferSelect)>(
-    sites.map((site: any) => [site.id, site]),
-  );
-  for (const row of trendRows) {
-    const site = activeSiteById.get(row.siteId);
-    if (!site) continue;
-    const siteName = site.name || 'unknown';
-    // Hourly buckets are stored on the UTC hour start but must be LABELLED in
-    // local time (the axis and tooltip print this key verbatim); daily rows are
-    // already local day keys, so both granularities now hand the UI local text.
-    const bucket = useHourly
-      ? toLocalHourLabelFromStoredUtc(row.bucketStartUtc)
-      : row.localDay;
-    if (!bucket) continue;
-
-    if (!siteFrame[bucket]) siteFrame[bucket] = {};
-    if (!siteFrame[bucket][siteName])
-      siteFrame[bucket][siteName] = { spend: 0, calls: 0 };
-
-    siteFrame[bucket][siteName].spend += Number(row.totalSiteSpend || 0);
-    siteFrame[bucket][siteName].calls += Number(row.totalCalls || 0);
+  const frame = new Map<string, Record<string, { spend: number; calls: number }>>();
+  for (const record of overview.records.filter((row) => row.kind === 'models' && row.day >= sinceDay)) {
+    const account = eligible.find((account) => account.accountId === record.accountId);
+    if (!account) continue;
+    const siteAccounts = eligible.filter((row) => row.siteId === account.siteId);
+    const coverage = overview.records.filter((row) => row.kind === 'models' && row.day === record.day && siteAccounts.some((item) => item.accountId === row.accountId));
+    if (coverage.length !== siteAccounts.length) continue;
+    const sites = frame.get(record.day) || {};
+    const value = sites[account.siteName] ||= { spend: 0, calls: 0 };
+    for (const model of record.data as UsageModel[]) { value.spend += model.actualCost ?? 0; value.calls += model.requests ?? 0; }
+    frame.set(record.day, sites);
   }
-
-  const trend = Object.entries(siteFrame)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([date, value]) => ({
-      date,
-      sites: Object.fromEntries(
-        Object.entries(value).map(([siteName, stats]) => [
-          siteName,
-          {
-            spend: toRoundedMicroNumber(stats.spend),
-            calls: stats.calls,
-          },
-        ]),
-      ),
-    }));
-
   return {
     distribution,
-    trend,
-    granularity: useHourly ? 'hour' as const : 'day' as const,
-    sites,
+    trend: [...frame.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, sites]) => ({ date, sites })),
+    granularity: 'day', sites,
   };
 }
 
@@ -179,12 +74,12 @@ export async function getSiteStatsSnapshot(options?: {
 }): Promise<SnapshotEnvelope<SiteStatsSnapshotPayload>> {
   const days = Math.max(1, Math.trunc(options?.days || 7));
   return readSnapshotCache({
-    namespace: 'site-stats',
+    namespace: 'site-stats-actual-v1',
     key: JSON.stringify({ days }),
     ttlMs: SITE_STATS_TTL_MS,
     forceRefresh: options?.forceRefresh,
     persistence: createAdminSnapshotPersistence<SiteStatsSnapshotPayload>({
-      namespace: 'site-stats',
+      namespace: 'site-stats-actual-v1',
       key: JSON.stringify({ days }),
     }),
     loader: async () => loadSiteStatsSnapshotPayload(days),

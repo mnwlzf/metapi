@@ -61,6 +61,7 @@ export interface TokenVerifyResult {
 }
 
 export interface ApiTokenInfo {
+  upstreamId?: number;
   name: string;
   key: string;
   enabled?: boolean;
@@ -142,6 +143,11 @@ export type DeleteApiTokenResult =
   | 'unconfirmed';
 
 export interface PlatformAdapter {
+  getUsageKeyCatalog?(baseUrl: string, accessToken: string): Promise<ApiTokenInfo[]>;
+  /** Optional, explicitly implemented management capability. One call = one HTTP request. */
+  getUsageDashboard?(baseUrl: string, accessToken: string, input: {
+    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string;
+  }): Promise<import('../../shared/upstreamUsage.js').UsageDataset>;
   readonly platformName: string;
   detect(url: string): Promise<boolean>;
   login(baseUrl: string, username: string, password: string): Promise<LoginResult>;

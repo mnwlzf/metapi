@@ -85,6 +85,17 @@ const ALLOWED_EDGES = [
 ];
 
 describe('layer dependency direction', () => {
+  it('keeps consumption reads local and upstream collection behind an explicit adapter capability', () => {
+    const routes = readFileSync(join(SERVER_ROOT, 'routes/api/usageCollection.ts'), 'utf8');
+    expect(routes).not.toMatch(/\bfetch\s*\(|\.from\s*\(|\.insert\s*\(/);
+    const collector = readFileSync(join(SERVER_ROOT, 'services/usageCollectionService.ts'), 'utf8');
+    expect(collector).toContain('adapter.getUsageDashboard!');
+    expect(collector).not.toMatch(/platform\s*===\s*['"]sub2api/);
+    const store = readFileSync(join(SERVER_ROOT, 'services/usageCollectionStore.ts'), 'utf8');
+    expect(store).not.toContain('proxyLogs');
+    const policy = readFileSync(join(SERVER_ROOT, 'services/usageCollectionPolicy.ts'), 'utf8');
+    expect(policy).not.toMatch(/from ['"].*(?:db|routes|platforms)/);
+  });
   it('has exactly the recorded layer edges', () => {
     const edges = collectEdges();
     const actual = [...edges.keys()].sort();

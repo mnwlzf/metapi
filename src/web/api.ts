@@ -28,6 +28,7 @@ import type {
   BackupImportPayload,
 } from '../server/contracts/settingsRoutePayloads.js';
 import { tr } from './i18n.js';
+import type { UsageCollectionConfig, UsageOverview } from '../server/shared/upstreamUsage.js';
 
 type BufferLike = {
   from(data: ArrayBuffer): { toString(encoding: 'base64'): string };
@@ -628,6 +629,10 @@ export type DownstreamApiKeyTrendResponse = {
 };
 
 export const api = {
+  getConsumption: () => request('/api/consumption') as Promise<UsageOverview>,
+  getConsumptionSettings: () => request('/api/consumption/settings') as Promise<UsageCollectionConfig>,
+  saveConsumptionSettings: (settings: UsageCollectionConfig) => request('/api/consumption/settings', { method: 'PUT', body: JSON.stringify(settings) }) as Promise<UsageCollectionConfig>,
+  syncConsumption: (input: { siteId?: number; start?: string; end?: string; resume?: boolean } = {}) => request('/api/consumption/sync', { method: 'POST', body: JSON.stringify(input) }) as Promise<{ queued: number }>,
   // Sites
   getSites: () => request('/api/sites'),
   getSite: (id: number) => request(`/api/sites/${id}`),

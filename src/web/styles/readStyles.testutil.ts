@@ -5,7 +5,7 @@ const ENTRY = resolve(process.cwd(), 'src/web/index.css');
 
 function expand(file: string): string {
   const content = readFileSync(file, 'utf8');
-  return content.replace(/@import\s+"([^"]+\.css)";\n/g, (_, specifier: string) =>
+  return content.replace(/@import\s+"([^"]+\.css)";\r?\n/g, (_, specifier: string) =>
     expand(resolve(dirname(file), specifier)));
 }
 

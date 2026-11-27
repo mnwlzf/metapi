@@ -38,6 +38,35 @@ describe('Sub2ApiAdapter', () => {
     expect(await adapter.detect('https://example.com')).toBe(false);
   });
 
+  it('requests actual dashboard aggregates with explicit timezone and single-day model scope', async () => {
+    const urls: URL[] = [];
+    await startServer((req, res) => {
+      const url = new URL(req.url!, 'http://local'); urls.push(url);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      const data = url.pathname.endsWith('/models')
+        ? { start_date: '2026-11-27', end_date: '2026-11-27', models: [{ model: 'a', actual_cost: 0, total_tokens: 42 }] }
+        : { today_actual_cost: 0.36385151, total_actual_cost: 0.39188871 };
+      res.end(JSON.stringify({ code: 0, data }));
+    });
+    const stats = await adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'stats', day: '2026-11-27', timeZone: 'Asia/Shanghai' });
+    expect(stats).toMatchObject({ today: { actualCost: 0.36385151 } });
+    const models = await adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'models', day: '2026-11-27', timeZone: 'Asia/Shanghai' });
+    expect(models).toMatchObject([{ model: 'a', actualCost: 0 }]);
+    expect(urls[1].searchParams.get('start_date')).toBe('2026-11-27');
+    expect(urls[1].searchParams.get('timezone')).toBe('Asia/Shanghai');
+  });
+
+  it('rejects an ignored model date range and preserves upstream Retry-After', async () => {
+    let calls = 0;
+    await startServer((_req, res) => {
+      calls++;
+      if (calls === 1) { res.writeHead(429, { 'Retry-After': '7200' }); res.end(); }
+      else { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ code: 0, data: { start_date: '2026-11-20', end_date: '2026-11-27', models: [] } })); }
+    });
+    await expect(adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'stats', day: '2026-11-27', timeZone: 'Asia/Shanghai' })).rejects.toMatchObject({ status: 429, retryAfterMs: 7200_000 });
+    await expect(adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'models', day: '2026-11-27', timeZone: 'Asia/Shanghai' })).rejects.toThrow('日期');
+  });
+
   it('detects sub2api by auth/me unauthorized envelope even without sub2api domain', async () => {
     await startServer((req, res) => {
       if (req.url === '/api/v1/auth/me') {

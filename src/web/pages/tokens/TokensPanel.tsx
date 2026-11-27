@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { copyText } from '../../clipboard.js';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { api } from '../../api.js';
 import CenteredModal from '../../components/CenteredModal.js';
 import ResponsiveFilterPanel from '../../components/ResponsiveFilterPanel.js';
@@ -1281,6 +1281,7 @@ export function TokensPanel({ embedded = false, onEmbeddedActionsChange, onManag
         </div>
       )}
 
+      <div className="consumption-actions" style={{ marginBottom: 12 }}><Link className="btn btn-ghost" to={`/consumption?view=keys${filterSiteId ? `&siteId=${filterSiteId}` : ''}`}>查看上游 Key 实际消费 →</Link></div>
       <ResponsiveFilterPanel
         isMobile={isMobile}
         mobileOpen={showMobileTools}

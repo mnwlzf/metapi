@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import UsageSettings from './consumption/UsageSettings.js';
 import { api } from '../api.js';
 import { useToast } from '../components/Toast.js';
 import { useIsMobile } from '../components/useIsMobile.js';
@@ -127,6 +129,12 @@ type RuntimeDatabaseState = {
 };
 
 export default function Settings() {
+  const [params] = useSearchParams();
+  const consumption = params.get('tab') === 'consumption';
+  return <><div className="consumption-tabs"><Link className={`btn ${consumption ? 'btn-ghost' : 'btn-soft-primary'}`} to="/settings">常规设置</Link><Link className={`btn ${consumption ? 'btn-soft-primary' : 'btn-ghost'}`} to="/settings?tab=consumption">消费数据采集</Link></div>{consumption ? <UsageSettings /> : <GeneralSettings />}</>;
+}
+
+function GeneralSettings() {
   const isMobile = useIsMobile();
   // Server answer wins once /api/settings/runtime has loaded; the hostname
   // heuristic only covers the window before it arrives (and offline shells).

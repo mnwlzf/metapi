@@ -16,8 +16,8 @@ interface SiteDistributionData {
   siteName: string;
   platform: string;
   totalBalance: number;
-  totalSpend: number;
-  todaySpend?: number;
+  totalSpend: number | null;
+  todaySpend?: number | null;
   accountCount: number;
 }
 
@@ -132,7 +132,7 @@ export default function SiteDistributionChart({ data, loading, active = true }: 
       .map((item: any) => ({
         siteName: String(item.siteName || '-'),
         platform: String(item.platform || ''),
-        value: safeNumber(viewMode === 'balance' ? item.totalBalance : item.todaySpend ?? item.totalSpend),
+        value: safeNumber(viewMode === 'balance' ? item.totalBalance : item.todaySpend),
         accountCount: safeNumber(item.accountCount),
       }))
       .filter((d) => d.value > 0)
