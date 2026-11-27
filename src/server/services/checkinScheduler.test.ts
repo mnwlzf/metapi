@@ -9,6 +9,7 @@ const allMock = vi.fn();
 const refreshAllBalancesMock = vi.fn();
 const refreshModelsAndRebuildRoutesMock = vi.fn();
 const runScheduledModelProbeBatchMock = vi.fn(async () => undefined);
+const runFirstVerificationBatchMock = vi.fn(async () => undefined);
 const schedulerBoundMock = vi.fn(async (...args: any[]): Promise<{ completed: boolean; result?: any }> => ({
   completed: true,
   result: await (refreshModelsAndRebuildRoutesMock as any)(...args),
@@ -84,6 +85,7 @@ vi.mock('./routeRefreshWorkflow.js', () => ({
 }));
 
 vi.mock('./modelService.js', () => ({
+  runFirstVerificationBatch: (...args: unknown[]) => runFirstVerificationBatchMock(...args),
   runScheduledModelProbeBatch: (...args: unknown[]) => runScheduledModelProbeBatchMock(...args),
 }));
 
@@ -101,6 +103,7 @@ describe('checkinScheduler', () => {
     vi.useFakeTimers();
     cronStopMock.mockReset();
     scheduleMock.mockClear();
+    runFirstVerificationBatchMock.mockClear();
     validateMock.mockClear();
     allMock.mockReset();
     refreshAllBalancesMock.mockReset();
@@ -227,6 +230,11 @@ describe('checkinScheduler', () => {
     (probePoll![0] as () => void)();
     await Promise.resolve();
     expect(runScheduledModelProbeBatchMock).toHaveBeenCalledTimes(1);
+    const firstVerificationPoll = setIntervalSpy.mock.calls.find(([, intervalMs]) => intervalMs === 60_000);
+    expect(firstVerificationPoll).toBeDefined();
+    (firstVerificationPoll![0] as () => void)();
+    await Promise.resolve();
+    expect(runFirstVerificationBatchMock).toHaveBeenCalledTimes(1);
     // startScheduler registers the check-in, balance, model-refresh,
     // daily-summary and log-cleanup cron tasks plus model-probe polling and
     // the models.dev price sync.
@@ -241,6 +249,8 @@ describe('checkinScheduler', () => {
     // Every cron task created by startScheduler is stopped.
     expect(cronStopMock).toHaveBeenCalledTimes(scheduledCount);
     expect(stopModelsDevPriceSyncMock).toHaveBeenCalledTimes(1);
+    const firstVerificationTimer = setIntervalSpy.mock.results[setIntervalSpy.mock.calls.indexOf(firstVerificationPoll!)].value;
+    expect(clearIntervalSpy).toHaveBeenCalledWith(firstVerificationTimer);
 
     // Interval mode is torn down through the same entry point.
     scheduler.updateCheckinSchedule({ mode: 'interval', intervalHours: 6 });

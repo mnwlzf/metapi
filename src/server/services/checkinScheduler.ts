@@ -13,7 +13,8 @@ import { buildDailySummaryNotification, collectDailySummaryMetrics } from './dai
 import { cleanupConfiguredLogs } from './logCleanupService.js';
 import { startModelsDevPriceSync, stopModelsDevPriceSync } from './modelPriceCatalogService.js';
 import { normalizeLogCleanupRetentionDays } from '../shared/logCleanupRetentionDays.js';
-import { runScheduledModelProbeBatch } from './modelService.js';
+import { runFirstVerificationBatch, runScheduledModelProbeBatch } from './modelService.js';
+import { FIRST_VERIFICATION_POLL_MS } from './modelProbeQueuePolicy.js';
 
 export type CheckinScheduleMode = 'cron' | 'interval';
 
@@ -24,6 +25,7 @@ let modelRefreshTask: ScheduledTask | null = null;
 let dailySummaryTask: ScheduledTask | null = null;
 let logCleanupTask: ScheduledTask | null = null;
 let modelProbeIntervalTimer: ReturnType<typeof setInterval> | null = null;
+let firstVerificationTimer: ReturnType<typeof setInterval> | null = null;
 const intervalAttemptByAccount = new Map<number, number>();
 let checkinPassInFlight: Promise<void> | null = null;
 let checkinPassStartedAtMs = 0;
@@ -600,6 +602,12 @@ export async function startScheduler() {
       console.error('[Scheduler] Scheduled model probe error:', error);
     });
   }, MODEL_PROBE_POLL_MS);
+  if (firstVerificationTimer) clearInterval(firstVerificationTimer);
+  firstVerificationTimer = setInterval(() => {
+    void runFirstVerificationBatch().catch((error) => {
+      console.error('[Scheduler] First model verification error:', error);
+    });
+  }, FIRST_VERIFICATION_POLL_MS);
   balanceTask = createBalanceTask(activeBalanceCron);
   modelRefreshTask = createModelRefreshTask(activeModelRefreshCron);
   dailySummaryTask = createDailySummaryTask(activeDailySummaryCron);
@@ -681,6 +689,8 @@ export function updateLogCleanupSettings(input: {
  * reload/desktop restart does not leak scheduled work.
  */
 export function stopScheduler() {
+  if (firstVerificationTimer) clearInterval(firstVerificationTimer);
+  firstVerificationTimer = null;
   stopCheckinSchedule();
   balanceTask?.stop();
   modelRefreshTask?.stop();
@@ -698,6 +708,8 @@ export function stopScheduler() {
 }
 
 export function __resetCheckinSchedulerForTests() {
+  if (firstVerificationTimer) clearInterval(firstVerificationTimer);
+  firstVerificationTimer = null;
   stopCheckinSchedule();
   balanceTask?.stop();
   modelRefreshTask?.stop();

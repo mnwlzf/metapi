@@ -2,22 +2,15 @@ import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { upsertSetting } from '../db/upsertSetting.js';
 import { matchesDisabledModelName } from './siteDisabledModels.js';
+import { classifyProbeModel, isPendingFirstVerification } from './modelProbeQueuePolicy.js';
+import { getFirstVerificationBudget, getFirstVerificationSettings } from './modelFirstVerificationService.js';
+import { requiresManagedAccountTokens } from './accountExtraConfig.js';
+import { ACCOUNT_TOKEN_VALUE_STATUS_READY } from './accountTokenService.js';
 
 export const MODEL_PROBE_PLAN_SETTING_KEY = 'model_probe_plan_overrides';
 export const MODEL_PROBE_INTERVALS_HOURS = [1, 6, 12, 24, 72] as const;
 export type ModelProbeIntervalHours = typeof MODEL_PROBE_INTERVALS_HOURS[number];
-export type ProbeModelType = 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
-
-export function classifyProbeModel(modelName: string): ProbeModelType {
-  const name = String(modelName || '').trim();
-  if (/(^|[-_/])rerank(er)?($|[-_/])/i.test(name)) return 'rerank';
-  if (/(^|[-_/])embedding(s)?($|[-_/])|(^|[-_/])embed($|[-_/])|(^|[-_/])(?:bge-(?!rerank)|gte-|e5-|voyage-)/i.test(name)) return 'embedding';
-  if (/(^|[-_/])image(s)?($|[-_/])|dall[-_]?e|imagen|stable[-_]?diffusion|sdxl|flux|recraft|ideogram|playground/i.test(name)) return 'image';
-  if (/(^|[-_/])(?:audio|tts|speech|whisper|transcri(?:be|ption)|voice)(?=$|[-_/])/i.test(name)) return 'audio';
-  if (/(^|[-_/])(?:video|veo|sora|cogvideo)(?=$|[-_/])/i.test(name)) return 'video';
-  if (!name || name.startsWith('__') || /(^|[-_/])moderation($|[-_/])/i.test(name)) return 'other';
-  return 'text';
-}
+export { classifyProbeModel, type ProbeModelType } from './modelProbeQueuePolicy.js';
 
 export function getDefaultProbeIntervalHours(modelName: string, recentCalls: number): ModelProbeIntervalHours {
   const type = classifyProbeModel(modelName);
@@ -63,12 +56,16 @@ export async function saveModelProbeIntervalOverride(modelName: string, interval
 }
 
 export async function getModelProbePlan() {
+  const settings = await getFirstVerificationSettings();
+  const firstVerification = { settings, budget: await getFirstVerificationBudget(settings) };
+  const accounts = await db.select().from(schema.accounts).all();
+  const directAccountIds = new Set(accounts.filter((account) => !requiresManagedAccountTokens(account)).map((account) => account.id));
   const names = await db.select({ modelName: schema.tokenModelAvailability.modelName })
     .from(schema.tokenModelAvailability)
     .innerJoin(schema.accountTokens, eq(schema.tokenModelAvailability.tokenId, schema.accountTokens.id))
     .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
     .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
-    .where(and(eq(schema.accountTokens.enabled, true), eq(schema.accounts.status, 'active'), eq(schema.sites.status, 'active')))
+    .where(and(eq(schema.accountTokens.enabled, true), eq(schema.accountTokens.valueStatus, ACCOUNT_TOKEN_VALUE_STATUS_READY), eq(schema.accounts.status, 'active'), eq(schema.sites.status, 'active')))
     .groupBy(schema.tokenModelAvailability.modelName).all();
   const accountNames = await db.select({ modelName: schema.modelAvailability.modelName })
     .from(schema.modelAvailability)
@@ -78,7 +75,7 @@ export async function getModelProbePlan() {
     .groupBy(schema.modelAvailability.modelName).all();
   const models = Array.from(new Set([...names, ...accountNames]
     .map((row) => String(row.modelName || '').trim()).filter(Boolean)));
-  if (models.length === 0) return { models: [], intervals: [...MODEL_PROBE_INTERVALS_HOURS] };
+  if (models.length === 0) return { models: [], intervals: [...MODEL_PROBE_INTERVALS_HOURS], firstVerification };
   const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString();
   const usageRows = await db.select({
     requested: schema.proxyLogs.modelRequested,
@@ -94,7 +91,7 @@ export async function getModelProbePlan() {
     }
   }
   const overrides = await getModelProbeIntervalOverrides();
-  const keyRows = await db.select({
+  const keyRows = (await db.select({
     tokenId: schema.tokenModelAvailability.tokenId,
     modelName: schema.tokenModelAvailability.modelName,
     available: schema.tokenModelAvailability.available,
@@ -115,10 +112,11 @@ export async function getModelProbePlan() {
     .where(and(
       inArray(schema.tokenModelAvailability.modelName, models),
       eq(schema.accountTokens.enabled, true),
+      eq(schema.accountTokens.valueStatus, ACCOUNT_TOKEN_VALUE_STATUS_READY),
       eq(schema.accounts.status, 'active'),
       eq(schema.sites.status, 'active'),
-    )).all();
-  const tokenMetaRows = await db.select({
+    )).all()).filter((row) => !directAccountIds.has(row.accountId));
+  const tokenMetaRows = (await db.select({
     tokenId: schema.accountTokens.id,
     keyName: schema.accountTokens.name,
     keyGroup: schema.accountTokens.tokenGroup,
@@ -132,19 +130,19 @@ export async function getModelProbePlan() {
     .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
     .where(and(
       eq(schema.accountTokens.enabled, true),
+      eq(schema.accountTokens.valueStatus, ACCOUNT_TOKEN_VALUE_STATUS_READY),
       eq(schema.accounts.status, 'active'),
       eq(schema.sites.status, 'active'),
-    )).all();
-  const enabledTokenOwners = await db.select({ accountId: schema.accountTokens.accountId })
+    )).all()).filter((row) => !directAccountIds.has(row.accountId));
+  const managedTokenOwners = await db.select({ accountId: schema.accountTokens.accountId })
     .from(schema.accountTokens)
     .innerJoin(schema.accounts, eq(schema.accountTokens.accountId, schema.accounts.id))
     .innerJoin(schema.sites, eq(schema.accounts.siteId, schema.sites.id))
     .where(and(
-      eq(schema.accountTokens.enabled, true),
       eq(schema.accounts.status, 'active'),
       eq(schema.sites.status, 'active'),
     )).groupBy(schema.accountTokens.accountId).all();
-  const accountsWithEnabledTokens = new Set(enabledTokenOwners.map((row) => row.accountId));
+  const accountsWithManagedTokens = new Set(managedTokenOwners.map((row) => row.accountId));
   const accountOnlyRows = (await db.select({
       accountId: schema.modelAvailability.accountId,
       modelName: schema.modelAvailability.modelName,
@@ -164,7 +162,7 @@ export async function getModelProbePlan() {
         eq(schema.accounts.status, 'active'),
         eq(schema.sites.status, 'active'),
       )).all()
-  ).filter((row) => !accountsWithEnabledTokens.has(row.accountId));
+  ).filter((row) => directAccountIds.has(row.accountId) || !accountsWithManagedTokens.has(row.accountId));
   const activeAccountIds = Array.from(new Set([
     ...tokenMetaRows.map((row) => row.accountId),
     ...accountOnlyRows.map((row) => row.accountId),
@@ -287,6 +285,8 @@ export async function getModelProbePlan() {
       : disable?.source === 'manual'
         ? 'manual-disabled'
       : disable ? 'probe-disabled'
+        : isPendingFirstVerification({ available: row.available, connectivity: row.connectivity, hasProbe: !!probe })
+          ? 'pending-verification'
         : row.available === true ? 'available'
           : row.available === false ? 'unavailable' : 'unknown';
     return {
@@ -331,7 +331,9 @@ export async function getModelProbePlan() {
       && matchesDisabledModelName(String(item.modelName || ''), String(row.modelName || ''))
     ));
     const accountDisable = matchingAccountDisables.find((item) => item.source === 'manual')
-      ?? matchingAccountDisables.find((item) => item.source === 'policy');
+      ?? matchingAccountDisables.find((item) => item.source === 'policy')
+      ?? matchingAccountDisables[0];
+    const accountProbe = latestProbeByCell.get(`account:${row.accountId}:${String(row.modelName || '').toLowerCase()}`) ?? null;
     const detail = {
       keyId: null,
       keyName: '账号级凭据',
@@ -349,8 +351,11 @@ export async function getModelProbePlan() {
         ? 'manual-disabled' as const
         : accountDisable?.source === 'policy'
           ? 'policy-disabled' as const
+          : accountDisable ? 'probe-disabled' as const
+          : isPendingFirstVerification({ available: row.available, connectivity: row.connectivity, hasProbe: !!accountProbe })
+            ? 'pending-verification' as const
           : row.available === true ? 'available' as const : row.available === false ? 'unavailable' as const : 'unknown' as const,
-      lastProbe: latestProbeByCell.get(`account:${row.accountId}:${String(row.modelName || '').toLowerCase()}`) ?? null,
+      lastProbe: accountProbe,
       recentCalls: accountUsage.get(`${row.accountId}:${String(row.modelName || '').toLowerCase()}`) || 0,
     };
     const target = detail.routeState === 'manual-disabled'
@@ -363,6 +368,7 @@ export async function getModelProbePlan() {
     target.set(key, rows);
   }
   return {
+    firstVerification,
     intervals: [...MODEL_PROBE_INTERVALS_HOURS],
     models: models.map((modelName) => {
       const recentCalls = usage.get(modelName.toLowerCase()) || 0;
@@ -382,6 +388,8 @@ export async function getModelProbePlan() {
         intervalHours: override ?? getDefaultProbeIntervalHours(modelName, recentCalls),
         automaticIntervalHours: getDefaultProbeIntervalHours(modelName, recentCalls),
         overridden: override !== null,
+        pendingVerificationCount: [...keyResults, ...manualExcludedKeys, ...policyExcludedKeys]
+          .filter((key) => key.routeState === 'pending-verification').length,
         keyResults: keyResults.sort((a, b) => (
           String(a.siteName || '').localeCompare(String(b.siteName || ''))
           || String(a.accountName || '').localeCompare(String(b.accountName || ''))
@@ -398,6 +406,7 @@ export async function getModelProbePlan() {
           || String(a.keyName || '').localeCompare(String(b.keyName || ''))
         )),
       };
-    }).sort((a, b) => a.type.localeCompare(b.type) || a.modelName.localeCompare(b.modelName)),
+    }).filter((model) => model.keyResults.length + model.manualExcludedKeys.length + model.policyExcludedKeys.length > 0)
+      .sort((a, b) => a.type.localeCompare(b.type) || a.modelName.localeCompare(b.modelName)),
   };
 }

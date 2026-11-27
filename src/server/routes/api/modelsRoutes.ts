@@ -8,7 +8,7 @@ import {
 } from '../../services/marketplaceThroughput.js';
 import { db, schema } from '../../db/index.js';
 import { and, eq, gte, sql } from 'drizzle-orm';
-import { refreshModelsForAccount } from '../../services/modelService.js';
+import { queueFirstVerificationBatch, refreshModelsForAccount } from '../../services/modelService.js';
 import * as routeRefreshWorkflow from '../../services/routeRefreshWorkflow.js';
 import { lookupModelsDevCapabilities } from '../../services/modelCapabilitiesService.js';
 import {
@@ -29,6 +29,7 @@ import { requiresManagedAccountTokens } from '../../services/accountExtraConfig.
 import { ACCOUNT_TOKEN_VALUE_STATUS_READY } from '../../services/accountTokenService.js';
 import { canonicalizeModelName } from '../../shared/modelCanonicalization.js';
 import { getModelProbePlan, MODEL_PROBE_INTERVALS_HOURS, saveModelProbeIntervalOverride } from '../../services/modelProbePlanService.js';
+import { getFirstVerificationBudget, getFirstVerificationSettings, saveFirstVerificationSettings } from '../../services/modelFirstVerificationService.js';
 import {
   isModelDisabledForSite,
   isAccountModelFallbackDisabled,
@@ -77,6 +78,22 @@ const limitModelCheck = createRateLimitGuard({
 
 export function registerModelsRoutes(app: FastifyInstance): void {
   app.get('/api/models/probe-plan', async () => getModelProbePlan());
+  app.get('/api/models/probe-plan/first-verification', async () => ({
+    settings: await getFirstVerificationSettings(),
+    budget: await getFirstVerificationBudget(),
+  }));
+  app.put<{ Body?: unknown }>('/api/models/probe-plan/first-verification', async (request, reply) => {
+    try { return { settings: await saveFirstVerificationSettings(request.body) }; }
+    catch (error) { return reply.code(400).send({ success: false, message: error instanceof Error ? error.message : '无效设置' }); }
+  });
+  app.post<{ Body?: { modelName?: string } }>('/api/models/probe-plan/first-verification',
+    { preHandler: [limitModelProbe] }, async (request, reply) => {
+      const name = request.body?.modelName;
+      if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+        return reply.code(400).send({ success: false, message: 'modelName 必须是非空字符串' });
+      }
+      return queueFirstVerificationBatch(name?.trim());
+    });
 
   app.put<{ Body?: { modelName?: string; intervalHours?: number | null } }>(
     '/api/models/probe-plan',

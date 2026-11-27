@@ -6,6 +6,7 @@ import { MobileCard, MobileField } from '../components/MobileCard.js';
 import { useIsMobile } from '../components/useIsMobile.js';
 import ListPage from '../components/ListPage.js';
 import { tr } from '../i18n.js';
+import FirstVerificationPanel from './probe-plan/FirstVerificationPanel.js';
 
 type ProbeModelType = 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
 type ProbePlanKeyResult = {
@@ -21,7 +22,7 @@ type ProbePlanKeyResult = {
   connectivity: boolean | null;
   availabilityLatencyMs: number | null;
   availabilityCheckedAt: string | null;
-  routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
+  routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'pending-verification' | 'available' | 'unavailable' | 'unknown';
   recentCalls: number;
   lastProbe: {
     status: string;
@@ -41,11 +42,12 @@ type ProbePlanModel = {
   intervalHours: number;
   automaticIntervalHours: number;
   overridden: boolean;
+  pendingVerificationCount: number;
   keyResults: ProbePlanKeyResult[];
   manualExcludedKeys: ProbePlanKeyResult[];
   policyExcludedKeys: ProbePlanKeyResult[];
 };
-type ProbePlanTab = ProbePlanModel['tab'];
+type ProbePlanTab = ProbePlanModel['tab'] | 'pending-verification';
 
 const TYPE_LABELS: Record<ProbeModelType, string> = {
   text: tr('文本'), image: tr('图片'), embedding: tr('向量'), rerank: tr('重排'),
@@ -59,6 +61,7 @@ export default function ProbePlan() {
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<ProbeModelType | 'all'>('all');
   const [planTab, setPlanTab] = useState<ProbePlanTab>('probeable');
+  const isProbeView = planTab === 'probeable' || planTab === 'pending-verification';
   const [overrideFilter, setOverrideFilter] = useState<'all' | 'automatic' | 'custom'>('all');
   const [savingModel, setSavingModel] = useState('');
   const [probingModel, setProbingModel] = useState('');
@@ -67,13 +70,16 @@ export default function ProbePlan() {
     queryKey: ['model-probe-plan'],
     queryFn: () => api.getModelProbePlan(),
     staleTime: 30_000,
+    refetchInterval: 10_000,
   });
   const models = planQuery.data?.models ?? [];
   const tabCounts = useMemo(() => models.reduce((counts, model) => {
     counts[model.tab] = (counts[model.tab] || 0) + 1;
     return counts;
   }, { probeable: 0, 'manual-disabled': 0, 'policy-disabled': 0 }), [models]);
-  const tabModels = useMemo(() => models.filter((model) => model.tab === planTab), [models, planTab]);
+  const pendingModels = models.filter((model) => model.pendingVerificationCount > 0);
+  const tabModels = useMemo(() => models.filter((model) => planTab === 'pending-verification'
+    ? model.pendingVerificationCount > 0 : model.tab === planTab), [models, planTab]);
   const typeCounts = useMemo(() => tabModels.reduce((counts, model) => {
     counts[model.type] = (counts[model.type] || 0) + 1;
     return counts;
@@ -146,6 +152,12 @@ export default function ProbePlan() {
   }
 
   function renderProbeButton(model: ProbePlanModel) {
+    if (planTab === 'pending-verification' || model.pendingVerificationCount > 0) return (
+      <button type="button" className="btn btn-ghost btn-sm"
+        aria-label={`${tr('首次验证下一批')} ${model.modelName}`}
+        disabled={!!probingModel || planQuery.data?.firstVerification?.budget.running || !!planQuery.data?.firstVerification?.budget.pauseReason}
+        onClick={() => void verifyModel(model.modelName)}>{tr('验证下一批')}</button>
+    );
     const isProbing = probingModel === model.modelName;
     return (
       <button
@@ -160,6 +172,17 @@ export default function ProbePlan() {
         <span>{isProbing ? tr('探测中...') : tr('手动探测')}</span>
       </button>
     );
+  }
+
+  async function verifyModel(modelName: string) {
+    setProbingModel(modelName);
+    try {
+      await api.runFirstVerification(modelName);
+      toast.success(tr('已安排首次验证，将按额度分批处理，可在任务中心查看结果'));
+      await planQuery.refetch();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : tr('安排验证失败'));
+    } finally { setProbingModel(''); }
   }
 
   function renderIntervalControl(model: ProbePlanModel) {
@@ -201,6 +224,11 @@ export default function ProbePlan() {
       emptyDesc={tr('先刷新站点的模型列表，模型出现后即可在这里调整探测频率。')}
       beforeList={(
         <>
+          {planQuery.data?.firstVerification && <FirstVerificationPanel
+            data={planQuery.data.firstVerification}
+            pendingCount={models.reduce((sum, model) => sum + model.pendingVerificationCount, 0)}
+            onRefresh={async () => { await planQuery.refetch(); }}
+          />}
           <div className="probe-plan-summary" aria-label={tr('模型探测概览')}>
             <SummaryMetric label={tr('模型总数')} value={models.length} />
             <SummaryMetric label={tr('自动调度')} value={tabCounts.probeable - customCount} />
@@ -217,10 +245,12 @@ export default function ProbePlan() {
           <div className="probe-plan-controls">
             <div className="probe-plan-status-tabs" role="tablist" aria-label={tr('按模型状态筛选')}>
               <StatusTab active={planTab === 'probeable'} onClick={() => setPlanTab('probeable')} label={tr('探测计划')} count={tabCounts.probeable} />
+              <StatusTab active={planTab === 'pending-verification'} onClick={() => { setPlanTab('pending-verification'); setTypeFilter('all'); }} label={tr('待首次验证')} count={pendingModels.length} />
               <StatusTab active={planTab === 'manual-disabled'} onClick={() => setPlanTab('manual-disabled')} label={tr('手动禁用')} count={tabCounts['manual-disabled']} />
               <StatusTab active={planTab === 'policy-disabled'} onClick={() => setPlanTab('policy-disabled')} label={tr('策略禁用')} count={tabCounts['policy-disabled']} />
             </div>
-            {planTab !== 'probeable' && (
+            {planTab === 'pending-verification' && <div className="probe-plan-policy">{tr('此处仅验证尚未确认的 Key × 模型；已有可用 Key 继续参与路由。首次验证独立于下方常规复测频率，失败后按常规计划复测。')}</div>}
+            {!isProbeView && (
               <div className={`probe-plan-status-note is-${planTab}`}>
                 {planTab === 'manual-disabled'
                   ? tr('这些模型的所有 Key 都已手动禁用，因此不会参与探测或路由。')
@@ -268,7 +298,7 @@ export default function ProbePlan() {
               headerActions={<TypeBadge type={model.type} />}
               footerActions={(
                 <div className="probe-plan-mobile-actions">
-                  {planTab === 'probeable' ? <>
+                  {isProbeView ? <>
                     <div className="probe-plan-mobile-frequency"><span>{tr('探测频率')}</span>{renderIntervalControl(model)}</div>
                     {renderProbeButton(model)}
                   </> : <StateBadge state={planTab} />}
@@ -276,7 +306,7 @@ export default function ProbePlan() {
               )}
             >
               <MobileField label={tr('近 7 天请求')} value={model.recentCalls.toLocaleString()} />
-              {planTab === 'probeable' && <MobileField label={tr('自动建议')} value={formatInterval(model.automaticIntervalHours)} />}
+              {isProbeView && <MobileField label={tr('待首次验证')} value={`${model.pendingVerificationCount} Key`} />}
               {expandedModel === model.modelName && <KeyDetails model={model} />}
             </MobileCard>
           ))}
@@ -290,13 +320,13 @@ export default function ProbePlan() {
                 <th>{tr('模型')}</th>
                 <th>{tr('分类')}</th>
                 <th className="is-numeric">{tr('近 7 天请求')}</th>
-                {planTab === 'probeable' && <>
+                {isProbeView && <>
                   <th>{tr('自动建议')}</th>
-                  <th>{tr('当前探测频率')}</th>
+                  <th>{tr('常规复测频率')}</th>
                   <th>{tr('模式')}</th>
                   <th>{tr('手动探测')}</th>
                 </>}
-                {planTab !== 'probeable' && <th>{tr('状态')}</th>}
+                {!isProbeView && <th>{tr('状态')}</th>}
               </tr>
             </thead>
             <tbody>
@@ -307,21 +337,22 @@ export default function ProbePlan() {
                     <button type="button" className="probe-plan-expand-button" aria-expanded={expandedModel === model.modelName} onClick={() => toggleModelDetails(model.modelName)}>
                       <Chevron expanded={expandedModel === model.modelName} />
                       <span className="probe-plan-model-name">{model.modelName}</span>
+                      {model.pendingVerificationCount > 0 && <span className="probe-plan-pending-count">{model.pendingVerificationCount} {tr('待验证')}</span>}
                     </button>
                   </td>
                   <td><TypeBadge type={model.type} /></td>
                   <td className="is-numeric probe-plan-calls">{model.recentCalls.toLocaleString()}</td>
-                  {planTab === 'probeable' ? <>
+                  {isProbeView ? <>
                     <td className="probe-plan-auto-value">{formatInterval(model.automaticIntervalHours)}</td>
                     <td>{renderIntervalControl(model)}</td>
                     <td><span className={`probe-plan-mode${model.overridden ? ' is-custom' : ''}`}>{model.overridden ? tr('手动') : tr('自动')}</span></td>
                     <td>{renderProbeButton(model)}</td>
                   </> : <td className="probe-plan-status-cell"><StateBadge state={planTab} /></td>}
                   </tr>
-                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={planTab === 'probeable' ? 7 : 4}><KeyDetails model={model} /></td></tr>}
+                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={isProbeView ? 7 : 4}><KeyDetails model={model} /></td></tr>}
                 </Fragment>
               ))}
-              {filteredModels.length === 0 && <tr><td colSpan={planTab === 'probeable' ? 7 : 4} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
+              {filteredModels.length === 0 && <tr><td colSpan={isProbeView ? 7 : 4} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -453,6 +484,7 @@ function StateBadge({ state }: { state: ProbePlanTab | ProbePlanKeyResult['route
     'manual-disabled': tr('手动禁用'),
     'policy-disabled': tr('策略禁用'),
     'probe-disabled': tr('探测禁用'),
+    'pending-verification': tr('待首次验证'),
     available: tr('可路由'),
     unavailable: tr('不可用'),
     unknown: tr('状态未知'),

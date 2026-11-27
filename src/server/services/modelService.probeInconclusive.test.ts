@@ -131,7 +131,7 @@ describe('probeSiteModels preserves catalog-backed routes without a conclusive c
     expect(await db.select().from(schema.siteDisabledModels).all()).toHaveLength(0);
   });
 
-  it('keeps models routable when no compatible specialized probe exists', async () => {
+  it('keeps unverified models out of routes when no compatible specialized probe exists', async () => {
     const { siteId, tokenId } = await seedSite();
     await db.update(schema.modelAvailability)
       .set({ modelName: 'whisper-large-v3', available: false })
@@ -148,7 +148,7 @@ describe('probeSiteModels preserves catalog-backed routes without a conclusive c
     expect(result.details[0]).toMatchObject({ modelName: 'whisper-large-v3', status: 'skipped' });
     const tokenRow = await db.select().from(schema.tokenModelAvailability)
       .where(eq(schema.tokenModelAvailability.tokenId, tokenId)).get();
-    expect(tokenRow).toMatchObject({ modelName: 'whisper-large-v3', available: true, connectivity: null });
+    expect(tokenRow).toMatchObject({ modelName: 'whisper-large-v3', available: false, connectivity: null });
   });
 
   it('activates a newly discovered image model only after the specialized probe succeeds', async () => {

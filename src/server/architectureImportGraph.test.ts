@@ -54,8 +54,9 @@ function collectEdges(): Map<string, string[]> {
       if (!to || to === from) continue;
       const key = `${from} -> ${to}`;
       const examples = edges.get(key) ?? [];
-      if (examples.length < 3 && !examples.includes(relative(SERVER_ROOT, file))) {
-        examples.push(relative(SERVER_ROOT, file));
+      const repositoryPath = relative(SERVER_ROOT, file).replaceAll('\\', '/');
+      if (examples.length < 3 && !examples.includes(repositoryPath)) {
+        examples.push(repositoryPath);
       }
       edges.set(key, examples);
     }
@@ -96,6 +97,15 @@ describe('layer dependency direction', () => {
     const edges = collectEdges();
     const upward = [...edges.keys()].filter((edge) => edge.startsWith('transformers -> ')).sort();
     expect(upward).toEqual(['transformers -> shared']);
+  });
+
+  it('keeps first verification policy pure and its ledger independent of route orchestration', () => {
+    const policy = readFileSync(join(SERVER_ROOT, 'services/modelProbeQueuePolicy.ts'), 'utf8');
+    expect([...policy.matchAll(/(?:from|import)\s*['"]([^'"]+)['"]/g)]).toHaveLength(0);
+    const ledger = readFileSync(join(SERVER_ROOT, 'services/modelFirstVerificationService.ts'), 'utf8');
+    const imports = [...ledger.matchAll(/from\s+['"]([^'"]+)['"]/g)].map((match) => match[1]);
+    expect(imports).not.toContain('./modelService.js');
+    expect(imports.some((path) => /routes|proxy-core|fastify/.test(path))).toBe(false);
   });
 
   it('keeps the single upward edge to one shim', () => {

@@ -26,6 +26,13 @@ import { probeRuntimeModel, type RuntimeModelProbeStatus } from './runtimeModelP
 import { isGroupScopedModelRejection } from './probeFailureClassification.js';
 import { canonicalizeModelName } from '../shared/modelCanonicalization.js';
 import { getDefaultProbeIntervalHours, getModelProbeIntervalOverrides } from './modelProbePlanService.js';
+import { classifyProbeModel, isLowPriorityVerification, isPendingFirstVerification } from './modelProbeQueuePolicy.js';
+import {
+  canRetryFirstVerification, finishFirstVerificationBatch,
+  finishFirstVerificationCell, getFirstVerificationBudget,
+  getFirstVerificationSettings, reserveFirstVerification, setFirstVerificationRunning,
+} from './modelFirstVerificationService.js';
+import { startBackgroundTask } from './backgroundTaskService.js';
 import { canonicalRouteAlias, collectGroupNameOwners, resolveExposedRouteName } from '../shared/routeGroupName.js';
 import { isCodexGatedPlatform } from '../shared/codexGatedPlatforms.js';
 import {
@@ -340,6 +347,9 @@ type ProbeCell = {
   tokenGroup: string | null;
   tokenValue: string;
   modelName: string;
+  available: boolean | null;
+  connectivity: boolean | null;
+  disabled: boolean;
 };
 
 export type ProbeSiteModelsOptions = {
@@ -357,6 +367,12 @@ export type ProbeSiteModelsOptions = {
   scheduled?: boolean;
   /** Internal cap when a scheduler shares one budget across multiple sites. */
   maxCells?: number;
+  /** First validation and routine rechecks have independent queues and budgets. */
+  queue?: 'first-verification' | 'regular';
+  /** Rebuild once after a multi-site batch, rather than once per site. */
+  deferRouteRebuild?: boolean;
+  onRouteChange?: () => void;
+  firstVerificationType?: 'standard' | 'media';
 };
 
 const PROBE_USAGE_WINDOW_MS = 7 * 24 * 60 * 60_000;
@@ -391,8 +407,8 @@ function resolveProbeMaxCellsPerRun(): number {
   return Number.isFinite(raw) && raw > 0 ? raw : 400;
 }
 
-function buildProbeRunId(): string {
-  return `pr_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+function buildProbeRunId(firstVerification = false): string {
+  return `${firstVerification ? 'fv-' : 'pr_'}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 /**
@@ -421,6 +437,9 @@ function createGroupSerializer() {
   };
 }
 
+const runProbeInGroup = createGroupSerializer();
+const verificationGroupNextAt = new Map<string, number>();
+
 /**
  * Build the cells for one probe run.
  *
@@ -448,6 +467,7 @@ async function buildProbeCells(params: {
 
   const cells: ProbeCell[] = [];
   const stickyDisables = await loadSiteDisabledModelsIndex({ sources: STICKY_DISABLE_SOURCES });
+  const allDisables = await loadSiteDisabledModelsIndex();
   const modelOrder: string[] = [];
   const seenModels = new Set<string>();
   const wantedTokenId = params.tokenId == null ? null : Number(params.tokenId);
@@ -463,7 +483,8 @@ async function buildProbeCells(params: {
       .from(schema.accountTokens)
       .where(eq(schema.accountTokens.accountId, account.id))
       .all()).map((row) => row.id);
-    const accountHasNoTokenLevelRows = accountTokenIds.length === 0
+    const usesManagedTokens = requiresManagedAccountTokens(account);
+    const accountHasNoTokenLevelRows = !usesManagedTokens || accountTokenIds.length === 0
       || (await db.select({ id: schema.tokenModelAvailability.id })
         .from(schema.tokenModelAvailability)
         .where(inArray(schema.tokenModelAvailability.tokenId, accountTokenIds))
@@ -478,12 +499,14 @@ async function buildProbeCells(params: {
       .where(and(
         eq(schema.accountTokens.accountId, account.id),
         eq(schema.accountTokens.enabled, true),
+        eq(schema.accountTokens.valueStatus, ACCOUNT_TOKEN_VALUE_STATUS_READY),
       ))
       .all();
+    if (usesManagedTokens && accountTokenIds.length > 0 && tokens.length === 0) continue;
     // An account with no managed keys still has to be probeable (public sites,
     // key-less imports): probe with the account credential and record the verdict
     // account-wide (token_id 0), the only scope available in that case.
-    const allTokens = tokens.length > 0
+    const allTokens = usesManagedTokens && tokens.length > 0
       ? tokens
       : [{
         id: 0,
@@ -502,11 +525,16 @@ async function buildProbeCells(params: {
 
       // What this key advertised, plus what is currently disabled for it — a
       // disabled cell has to stay probeable, otherwise it can never recover.
-      const advertised = await db.select({ modelName: schema.tokenModelAvailability.modelName })
+      const advertised = await db.select({
+        modelName: schema.tokenModelAvailability.modelName,
+        available: schema.tokenModelAvailability.available,
+        connectivity: schema.tokenModelAvailability.connectivity,
+      })
         .from(schema.tokenModelAvailability)
         .where(and(
           eq(schema.tokenModelAvailability.tokenId, token.id),
         ))
+        .orderBy(schema.tokenModelAvailability.id)
         .all();
       const disabled = await db.select({
         modelName: schema.siteDisabledModels.modelName,
@@ -522,6 +550,9 @@ async function buildProbeCells(params: {
         .all();
 
       const tokenModels = new Map<string, string>();
+      const availabilityByName = new Map<string, { available: boolean | null; connectivity: boolean | null }>(
+        advertised.map((row) => [row.modelName.toLowerCase(), row]),
+      );
       const advertisedNames = new Set(advertised.map((row) => String(row.modelName || '').trim().toLowerCase()));
       for (const row of advertised) {
         const name = String(row.modelName || '').trim();
@@ -545,13 +576,19 @@ async function buildProbeCells(params: {
       // it with the account's default key. Group-scoped rejections are still
       // classified as "not applicable", so this cannot disable models another
       // group serves.
-      if (tokenModels.size === 0 && accountHasNoTokenLevelRows) {
-        const accountLevel = await db.select({ modelName: schema.modelAvailability.modelName })
+      if (token.id === 0 || (tokenModels.size === 0 && accountHasNoTokenLevelRows)) {
+        const accountLevel = await db.select({
+          modelName: schema.modelAvailability.modelName,
+          available: schema.modelAvailability.available,
+          connectivity: schema.modelAvailability.connectivity,
+        })
           .from(schema.modelAvailability)
           .where(and(
             eq(schema.modelAvailability.accountId, account.id),
           ))
+          .orderBy(schema.modelAvailability.id)
           .all();
+        for (const row of accountLevel) availabilityByName.set(row.modelName.toLowerCase(), row);
         const accountDisabled = await db.select({ modelName: schema.siteDisabledModels.modelName })
           .from(schema.siteDisabledModels)
           .where(and(
@@ -584,6 +621,9 @@ async function buildProbeCells(params: {
           tokenGroup: token.tokenGroup ? String(token.tokenGroup) : null,
           tokenValue,
           modelName,
+          available: availabilityByName.get(key)?.available ?? null,
+          connectivity: availabilityByName.get(key)?.connectivity ?? null,
+          disabled: isModelDisabledForSite(allDisables, site.id, modelName, account.id, token.id),
         });
       }
     }
@@ -711,38 +751,6 @@ async function markCellUnavailable(cell: ProbeCell): Promise<void> {
     .run();
 }
 
-/** Models without a chat probe protocol rely on the upstream model catalog. */
-async function markCellCatalogAvailable(cell: ProbeCell): Promise<boolean> {
-  const checkedAt = new Date().toISOString();
-  if (cell.tokenId === 0) {
-    const previous = await db.select().from(schema.modelAvailability)
-      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
-        eq(schema.modelAvailability.modelName, cell.modelName))).get();
-    await db.update(schema.modelAvailability)
-      .set({ available: true, connectivity: null, checkedAt })
-      .where(and(eq(schema.modelAvailability.accountId, cell.account.id),
-        eq(schema.modelAvailability.modelName, cell.modelName))).run();
-    return previous?.available !== true;
-  }
-  const previous = await db.select().from(schema.tokenModelAvailability)
-    .where(and(eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
-      eq(schema.tokenModelAvailability.modelName, cell.modelName))).get();
-  if (!previous) {
-    await db.insert(schema.tokenModelAvailability).values({
-      tokenId: cell.tokenId,
-      modelName: cell.modelName,
-      available: true,
-      connectivity: null,
-      checkedAt,
-    }).onConflictDoNothing().run();
-  }
-  await db.update(schema.tokenModelAvailability)
-    .set({ available: true, connectivity: null, checkedAt })
-    .where(and(eq(schema.tokenModelAvailability.tokenId, cell.tokenId),
-      eq(schema.tokenModelAvailability.modelName, cell.modelName))).run();
-  return previous?.available !== true;
-}
-
 export async function probeSiteModels(
   siteId: number,
   options?: ProbeSiteModelsOptions,
@@ -811,13 +819,17 @@ export async function probeSiteModels(
       : '该站点暂无已发现模型，请先刷新模型列表');
   }
 
-  const runId = buildProbeRunId();
+  const firstVerification = options?.queue === 'first-verification';
+  const firstSettings = firstVerification ? await getFirstVerificationSettings() : null;
+  const runId = buildProbeRunId(firstVerification);
   const cooldownMs = resolveProbeCellCooldownMs();
   const maxCells = resolveProbeMaxCellsPerRun();
   const nowMs = Date.now();
-  const recent = options?.force
-    ? new Map<string, number>()
-    : await loadRecentProbeTimes(Array.from(new Set(built.cells.map((cell) => cell.account.id))));
+  const recent = await loadRecentProbeTimes(Array.from(new Set(built.cells.map((cell) => cell.account.id))));
+  const isPending = (cell: ProbeCell) => isPendingFirstVerification({
+    available: cell.available, connectivity: cell.connectivity, hasProbe: recent.has(getProbeCellKey(cell)),
+    disabled: cell.disabled,
+  });
   const withinCooldown = (cell: ProbeCell): boolean => {
     if (options?.force || cooldownMs <= 0) return false;
     const last = recent.get(`${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`) ?? 0;
@@ -828,7 +840,7 @@ export async function probeSiteModels(
     : new Map<string, number>();
   const cadenceOverrides = options?.scheduled ? await getModelProbeIntervalOverrides() : {};
   const dueBySchedule = (cell: ProbeCell): boolean => {
-    if (!options?.scheduled) return true;
+    if (!options?.scheduled || firstVerification) return true;
     const key = `${cell.account.id}:${cell.tokenId}:${cell.modelName.trim().toLowerCase()}`;
     const last = recent.get(key) ?? 0;
     const count = usage.get(key) ?? 0;
@@ -837,13 +849,24 @@ export async function probeSiteModels(
     return !last || nowMs - last >= intervalHours * 60 * 60_000;
   };
   const skippedByCooldown = built.cells.filter((cell) => withinCooldown(cell) || !dueBySchedule(cell)).length;
-  const cellLimit = options?.maxCells && options.maxCells > 0
-    ? Math.min(maxCells, Math.trunc(options.maxCells))
-    : options?.scheduled ? Math.min(maxCells, PROBE_SCHEDULED_MAX_CELLS) : maxCells;
   const eligibleCells = built.cells.filter((cell) => !withinCooldown(cell)
     && dueBySchedule(cell)
+    && (options?.queue === 'first-verification' ? isPending(cell) && canRetryFirstVerification(getProbeCellKey(cell))
+      : options?.queue === 'regular' ? !isPending(cell) : true)
+    && (!options?.firstVerificationType || isLowPriorityVerification(classifyProbeModel(cell.modelName)) === (options.firstVerificationType === 'media'))
     && !probeCellsInFlight.has(getProbeCellKey(cell)));
-  if (options?.trigger === 'scheduled' && eligibleCells.length > 1) {
+  if (firstVerification) {
+    eligibleCells.sort((a, b) => (
+      Number(isLowPriorityVerification(classifyProbeModel(a.modelName))) - Number(isLowPriorityVerification(classifyProbeModel(b.modelName)))
+    ));
+  }
+  const firstCellLimit = firstSettings
+    ? Math.min(maxCells, options?.maxCells ?? firstSettings.batchSize, firstSettings.batchSize, firstSettings.hourlyLimit)
+    : null;
+  const effectiveCellLimit = firstCellLimit ?? (options?.maxCells && options.maxCells > 0
+    ? Math.min(maxCells, Math.trunc(options.maxCells))
+    : options?.scheduled ? Math.min(maxCells, PROBE_SCHEDULED_MAX_CELLS) : maxCells);
+  if (!firstVerification && options?.trigger === 'scheduled' && eligibleCells.length > 1) {
     const previousKey = scheduledCellCursorBySite.get(site.id);
     const previousIndex = previousKey
       ? eligibleCells.findIndex((cell) => getProbeCellKey(cell) === previousKey)
@@ -852,8 +875,8 @@ export async function probeSiteModels(
       eligibleCells.push(...eligibleCells.splice(0, previousIndex + 1));
     }
   }
-  const cells = eligibleCells.slice(0, cellLimit);
-  if (options?.trigger === 'scheduled' && cells.length > 0) {
+  const cells = eligibleCells.slice(0, effectiveCellLimit);
+  if (!firstVerification && options?.trigger === 'scheduled' && cells.length > 0) {
     scheduledCellCursorBySite.set(site.id, getProbeCellKey(cells[cells.length - 1]!));
   }
 
@@ -885,8 +908,7 @@ export async function probeSiteModels(
   }
 
   const threshold = options?.latencyThresholdMs ?? 0;
-  const concurrency = Math.max(1, options?.concurrency ?? 10);
-  const runInGroup = createGroupSerializer();
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 10, firstSettings?.concurrency ?? 10));
 
   let supportedCount = 0;
   let unsupportedCount = 0;
@@ -904,7 +926,20 @@ export async function probeSiteModels(
       const groupKey = `${cell.account.id}:${cell.tokenGroup ?? cell.tokenId}`;
       let result: Awaited<ReturnType<typeof probeRuntimeModel>> | null = null;
       try {
-        result = await runInGroup(groupKey, () => probeRuntimeModel({
+        result = await runProbeInGroup(groupKey, async () => {
+          if (firstSettings) {
+            const nextAt = verificationGroupNextAt.get(groupKey) ?? 0;
+            // A 429 pauses the group; avoid holding workers through the backoff.
+            if (nextAt - Date.now() > Math.max(firstSettings.groupIntervalSeconds * 1000, 1000)) return null;
+            const waitMs = Math.max(0, nextAt - Date.now());
+            if (waitMs) await new Promise((resolve) => setTimeout(resolve, waitMs));
+            if (options?.signal?.aborted || !await reserveFirstVerification({
+              runId, cellKey: getProbeCellKey(cell), settings: firstSettings,
+              media: isLowPriorityVerification(classifyProbeModel(cell.modelName)),
+            })) return null;
+            verificationGroupNextAt.set(groupKey, Date.now() + firstSettings.groupIntervalSeconds * 1000);
+          }
+          const verdict = await probeRuntimeModel({
           site,
           account: cell.account,
           modelName: cell.modelName,
@@ -915,7 +950,12 @@ export async function probeSiteModels(
           tokenId: cell.tokenId > 0 ? cell.tokenId : null,
           tokenGroup: cell.tokenGroup,
           runId,
-        }));
+          });
+          if (firstSettings && verdict && /\b429\b|rate.?limit|too many requests|限流/i.test(verdict.reason || '')) {
+            verificationGroupNextAt.set(groupKey, Date.now() + 60 * 60_000);
+          }
+          return verdict;
+        });
       } catch (error) {
         const reason = error instanceof Error ? error.message : '探测异常';
         console.warn(`[probe] account ${cell.account.id} token ${cell.tokenId} ${cell.modelName} failed`, error);
@@ -923,7 +963,10 @@ export async function probeSiteModels(
         details.push({ modelName: cell.modelName, status: 'inconclusive', latencyMs: null, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
         onProgress?.({ type: 'model', modelName: cell.modelName, status: 'inconclusive', latencyMs: null, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
         continue;
+      } finally {
+        if (firstVerification) finishFirstVerificationCell(getProbeCellKey(cell));
       }
+      if (!result) continue;
 
       const latencyExceeded = (
         result.status === 'supported'
@@ -953,21 +996,8 @@ export async function probeSiteModels(
         : { type: 'model', modelName: cell.modelName, status, latencyMs: result.latencyMs, reason, tokenId: cell.tokenId, tokenName: cell.tokenName, tokenGroup: cell.tokenGroup });
 
       if (status === 'skipped') {
-        // Audio and other endpoints without a specialized probe rely on the
-        // upstream model catalog; keep connectivity unknown and preserve routing.
-        if (result.reason === 'skipped non-conversation model probe'
-          && await markCellCatalogAvailable(cell)) {
-          routeRebuildNeeded = true;
-        }
-        if (result.reason === 'skipped non-conversation model probe') {
-          const recovered = await clearAutoDisabledModels({
-            siteId: site.id,
-            accountId: cell.account.id,
-            tokenId: cell.tokenId,
-            modelNames: [cell.modelName],
-          });
-          if (recovered.length > 0) routeRebuildNeeded = true;
-        }
+        // A skipped endpoint provides no evidence to activate a new channel or
+        // clear a previous failure. Existing available channels stay untouched.
         continue;
       }
 
@@ -1030,10 +1060,13 @@ export async function probeSiteModels(
   // and, on a wide account, costs more time than the probing itself.
   if (details.length > 0) clearModelsMarketplaceCache();
   if (routeRebuildNeeded && !options?.signal?.aborted) {
-    invalidateTokenRouterCache();
-    await rebuildTokenRoutesFromAvailability().catch((err) => {
-      console.warn('[probe] route rebuild failed', err);
-    });
+    options?.onRouteChange?.();
+    if (!options?.deferRouteRebuild) {
+      invalidateTokenRouterCache();
+      await rebuildTokenRoutesFromAvailability().catch((err) => {
+        console.warn('[probe] route rebuild failed', err);
+      });
+    }
   }
 
   if (unsupportedCount > 0) {
@@ -1070,6 +1103,85 @@ export async function probeSiteModels(
 }
 
 let scheduledProbePass: Promise<void> | null = null;
+let firstVerificationPass: Promise<{ probed: number; supported: number; notConfirmed: number }> | null = null;
+let firstVerificationSiteCursor = 0;
+let firstVerificationRoutesDirty = false;
+
+export function queueFirstVerificationBatch(modelName?: string) {
+  const { task, reused } = startBackgroundTask({
+    type: 'model', title: '模型首次验证', dedupeKey: `model-first-verification:${modelName?.toLowerCase() || 'all'}`,
+    notifyOnFailure: true,
+  }, () => runFirstVerificationBatch({ modelName, manual: true }));
+  return { queued: true, taskId: task.id, reused };
+}
+
+/** Independent first-validation queue; availability and probe logs are its ledger. */
+export function runFirstVerificationBatch(options?: { modelName?: string; manual?: boolean }): Promise<{ probed: number; supported: number; notConfirmed: number }> {
+  if (firstVerificationPass) {
+    return options?.manual
+      ? firstVerificationPass.catch(() => undefined).then(() => runFirstVerificationBatch(options))
+      : firstVerificationPass;
+  }
+  const pass = (async () => {
+    const summary = { probed: 0, supported: 0, notConfirmed: 0 };
+    // A failed rebuild must be retried even when the verification budget is
+    // exhausted: the newly verified channels are already persisted.
+    if (firstVerificationRoutesDirty) {
+      await rebuildTokenRoutesFromAvailability();
+      invalidateTokenRouterCache();
+      firstVerificationRoutesDirty = false;
+    }
+    const settings = await getFirstVerificationSettings();
+    if ((!settings.enabled && !options?.manual) || (await getFirstVerificationBudget(settings)).pauseReason) return summary;
+    const sites = await db.select().from(schema.sites).where(eq(schema.sites.status, 'active')).all();
+    if (!sites.length) return summary;
+    const start = firstVerificationSiteCursor % sites.length;
+    for (const [group, until] of verificationGroupNextAt) {
+      if (until <= Date.now()) verificationGroupNextAt.delete(group);
+    }
+    setFirstVerificationRunning(true);
+    try {
+      // Complete normal-priority work across sites before spending on images.
+      for (const priority of ['standard', 'media'] as const) {
+        for (let offset = 0; offset < sites.length && summary.probed < settings.batchSize; offset++) {
+          if ((await getFirstVerificationBudget(settings)).pauseReason) break;
+          const index = (start + offset) % sites.length;
+          const site = sites[index]!;
+          try {
+            const result = await probeSiteModels(site.id, {
+              queue: 'first-verification', firstVerificationType: priority,
+              scope: options?.modelName ? 'single' : 'all', modelName: options?.modelName,
+              trigger: options?.manual ? 'manual' : 'scheduled',
+              maxCells: Math.min(priority === 'media' ? 1 : settings.concurrency, settings.batchSize - summary.probed),
+              concurrency: settings.concurrency,
+              deferRouteRebuild: true, onRouteChange: () => { firstVerificationRoutesDirty = true; },
+            });
+            summary.probed += result.probed;
+            summary.supported += result.supported;
+            summary.notConfirmed += result.probed - result.supported;
+            if (result.probed) firstVerificationSiteCursor = (index + 1) % sites.length;
+          } catch (error) {
+            console.warn(`[first-verification] site ${site.id} failed`, error);
+          }
+        }
+      }
+    } finally {
+      try {
+        if (firstVerificationRoutesDirty) {
+          invalidateTokenRouterCache();
+          await rebuildTokenRoutesFromAvailability();
+          firstVerificationRoutesDirty = false;
+        }
+      } finally {
+        setFirstVerificationRunning(false);
+        finishFirstVerificationBatch(summary);
+      }
+    }
+    return summary;
+  })().finally(() => { if (firstVerificationPass === pass) firstVerificationPass = null; });
+  firstVerificationPass = pass;
+  return pass;
+}
 
 /** Run a small due-only probe batch per active site. */
 export function runScheduledModelProbeBatch(): Promise<void> {
@@ -1093,6 +1205,7 @@ export function runScheduledModelProbeBatch(): Promise<void> {
         const result = await probeSiteModels(site.id, {
           scope: 'all',
           scheduled: true,
+          queue: 'regular',
           maxCells: remainingCells,
           trigger: 'scheduled',
           concurrency: 2,
@@ -1136,6 +1249,7 @@ async function runPostRefreshProbeIfEnabled(params: {
       : (params.site.postRefreshProbeModel || params.discoveredModels[0]),
     latencyThresholdMs: params.site.postRefreshProbeLatencyThresholdMs ?? 0,
     scheduled: true,
+    queue: 'regular',
     trigger: 'post-refresh',
   });
   if (!result.success) return undefined;

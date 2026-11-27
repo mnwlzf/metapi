@@ -2,6 +2,44 @@
   align-items: flex-start;
 }
 
+.first-verification-panel {
+  margin-bottom: 20px;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-card);
+}
+.first-verification-heading, .first-verification-actions {
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+.first-verification-heading h2 { margin: 0 0 6px; font-size: 16px; color: var(--color-text-primary); }
+.first-verification-heading p, .first-verification-note, .first-verification-actions > span {
+  margin: 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.65;
+}
+.first-verification-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 20px; margin: 22px 0; }
+.first-verification-metrics > div { display: flex; flex-direction: column; gap: 8px; }
+.first-verification-metrics > div > span { font-size: 12px; color: var(--color-text-muted); }
+.first-verification-metrics strong { font-size: 22px; font-variant-numeric: tabular-nums; color: var(--color-text-primary); }
+.first-verification-metrics small { font-size: 12px; font-weight: 400; color: var(--color-text-muted); }
+.first-verification-actions { padding: 12px 0; }
+.first-verification-settings { border-top: 1px solid var(--color-border-light); padding-top: 12px; margin-bottom: 12px; }
+.first-verification-settings summary { cursor: pointer; color: var(--color-primary); font-size: 13px; }
+.first-verification-toggle { display: flex; align-items: center; gap: 8px; margin: 18px 0; font-size: 13px; }
+.first-verification-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+.first-verification-fields label { display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: var(--color-text-secondary); }
+.first-verification-fields input { min-width: 0; width: 100%; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg); color: var(--color-text-primary); }
+.probe-plan-pending-count { font-size: 11px; white-space: nowrap; color: var(--color-primary); }
+.probe-plan-state.is-pending-verification { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+@media (max-width: 900px) {
+  .first-verification-metrics, .first-verification-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 480px) {
+  .first-verification-panel { padding: 14px; }
+  .first-verification-heading, .first-verification-actions { align-items: flex-start; flex-direction: column; }
+  .first-verification-fields { grid-template-columns: minmax(0, 1fr); }
+  .first-verification-metrics strong { font-size: 19px; }
+}
+
 .probe-plan-refresh {
   gap: 7px;
 }

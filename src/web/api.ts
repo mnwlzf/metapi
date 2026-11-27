@@ -992,6 +992,17 @@ export const api = {
     }>,
   getModelProbePlan: () => request('/api/models/probe-plan') as Promise<{
     intervals: number[];
+    firstVerification: {
+      settings: {
+        enabled: boolean; batchSize: number; hourlyLimit: number; dailyCostLimitUsd: number;
+        concurrency: number; mediaHourlyLimit: number; groupIntervalSeconds: number;
+      };
+      budget: {
+        hourlyUsed: number; mediaHourlyUsed: number; dailyCostUsd: number; unknownCostCount: number;
+        pauseReason: string | null; running: boolean;
+        lastBatch: { finishedAt: string; probed: number; supported: number; notConfirmed: number } | null;
+      };
+    };
     models: Array<{
       modelName: string;
       type: 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
@@ -1000,6 +1011,7 @@ export const api = {
       intervalHours: number;
       automaticIntervalHours: number;
       overridden: boolean;
+      pendingVerificationCount: number;
       keyResults: Array<{
         keyId: number | null;
         keyName: string;
@@ -1013,7 +1025,7 @@ export const api = {
         connectivity: boolean | null;
         availabilityLatencyMs: number | null;
         availabilityCheckedAt: string | null;
-        routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
+        routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'pending-verification' | 'available' | 'unavailable' | 'unknown';
         recentCalls: number;
         lastProbe: {
           status: string;
@@ -1082,6 +1094,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ modelName, intervalHours }),
     }),
+  runFirstVerification: (modelName?: string) => request('/api/models/probe-plan/first-verification', {
+    method: 'POST',
+    body: JSON.stringify(modelName ? { modelName } : {}),
+  }),
+  saveFirstVerificationSettings: (settings: {
+    enabled: boolean; batchSize: number; hourlyLimit: number; dailyCostLimitUsd: number;
+    concurrency: number; mediaHourlyLimit: number; groupIntervalSeconds: number;
+  }) => request('/api/models/probe-plan/first-verification', { method: 'PUT', body: JSON.stringify(settings) }),
   /** Probe runs (batches): one row per `run_id` with counts and spend. */
   getProbeLogRuns: (params?: string) =>
     request(`/api/probe-logs/runs${params ? `?${params}` : ''}`) as Promise<{

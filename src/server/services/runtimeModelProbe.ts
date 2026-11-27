@@ -21,7 +21,7 @@ import { db } from '../db/index.js';
 import { probeLogs } from '../db/schema.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { isModelDisabledForSite, loadSiteDisabledModelsIndex, STICKY_DISABLE_SOURCES } from './siteDisabledModels.js';
-import { classifyProbeModel } from './modelProbePlanService.js';
+import { classifyProbeModel } from './modelProbeQueuePolicy.js';
 
 export type RuntimeModelProbeStatus = 'supported' | 'unsupported' | 'inconclusive' | 'skipped';
 
@@ -961,13 +961,13 @@ export async function probeRuntimeModel(input: {
       runId: input.runId ?? null,
       modelName: input.modelName,
       questionCategory: 'unknown',
-      questionText: '未发送请求：该模型不支持聊天探测，依据上游模型目录保留可路由状态',
+      questionText: '未发送请求：该模型暂无兼容的专用探测方式，不能据此确认可用',
       responseText: null,
       status: 'skipped',
       latencyMs: null,
       tokensUsed: null,
-      estimatedCost: null,
-      errorMessage: 'no compatible chat probe endpoint; model kept from upstream catalog',
+      estimatedCost: 0,
+      errorMessage: 'no compatible probe endpoint; availability unchanged',
     }).catch((err: unknown) => console.error('[probe-log] Failed to insert skipped probe log:', err));
     return {
       status: 'skipped',
