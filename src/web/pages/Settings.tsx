@@ -131,7 +131,15 @@ type RuntimeDatabaseState = {
 export default function Settings() {
   const [params] = useSearchParams();
   const consumption = params.get('tab') === 'consumption';
-  return <><div className="consumption-tabs"><Link className={`btn ${consumption ? 'btn-ghost' : 'btn-soft-primary'}`} to="/settings">常规设置</Link><Link className={`btn ${consumption ? 'btn-soft-primary' : 'btn-ghost'}`} to="/settings?tab=consumption">消费数据采集</Link></div>{consumption ? <UsageSettings /> : <GeneralSettings />}</>;
+  return (
+    <div style={{ width: '100%', maxWidth: 1320, margin: '0 auto' }}>
+      <div className="consumption-tabs">
+        <Link className={`btn ${consumption ? 'btn-ghost' : 'btn-soft-primary'}`} to="/settings">常规设置</Link>
+        <Link className={`btn ${consumption ? 'btn-soft-primary' : 'btn-ghost'}`} to="/settings?tab=consumption">消费数据采集</Link>
+      </div>
+      {consumption ? <UsageSettings /> : <GeneralSettings />}
+    </div>
+  );
 }
 
 function GeneralSettings() {
@@ -1001,7 +1009,7 @@ function GeneralSettings() {
   }
 
   return (
-    <div className="animate-fade-in" style={{ width: '100%', maxWidth: 1320, margin: '0 auto' }}>
+    <div className="animate-fade-in">
       <div className="page-header">
         <h2 className="page-title">{tr('系统设置')}</h2>
       </div>
