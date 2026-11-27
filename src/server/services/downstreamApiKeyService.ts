@@ -84,6 +84,7 @@ export type DownstreamApiKeyPolicyView = {
   enabled: boolean;
   expiresAt: string | null;
   maxCost: number | null;
+  minUpstreamRate: number | null;
   maxUpstreamRate: number | null;
   usedCost: number;
   maxRequests: number | null;
@@ -235,6 +236,14 @@ export function normalizeSupportedModelsInput(input: unknown): string[] {
   return [];
 }
 
+function validateSupportedModelPatterns(patterns: string[]): void {
+  for (const pattern of patterns) {
+    if (pattern.length > 256) throw new Error('模型白名单规则不能超过 256 个字符');
+    if (!isRegexModelPattern(pattern)) continue;
+    if (!parseRegexModelPattern(pattern)) throw new Error(`模型白名单正则无效：${pattern}`);
+  }
+}
+
 export function normalizeAllowedRouteIdsInput(input: unknown): number[] {
   const rawValues = Array.isArray(input)
     ? input
@@ -286,6 +295,8 @@ export function normalizeMaxUpstreamRateInput(input: unknown): number | null {
   if (!Number.isFinite(value) || value < 0) return null;
   return value;
 }
+
+export const normalizeMinUpstreamRateInput = normalizeMaxUpstreamRateInput;
 
 export function normalizeAllowedSiteIdsInput(input: unknown): number[] {
   const rawValues = Array.isArray(input)
@@ -445,6 +456,7 @@ export function toDownstreamApiKeyPolicyView(row: DownstreamApiKeyRow): Downstre
     enabled: !!row.enabled,
     expiresAt: row.expiresAt || null,
     maxCost: row.maxCost ?? null,
+    minUpstreamRate: row.minUpstreamRate ?? null,
     maxUpstreamRate: row.maxUpstreamRate ?? null,
     usedCost: Number(row.usedCost || 0),
     maxRequests: row.maxRequests ?? null,
@@ -469,7 +481,7 @@ export function toDownstreamApiKeyPolicyView(row: DownstreamApiKeyRow): Downstre
   };
 }
 
-export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'supportedModels' | 'modelMappings' | 'allowedRouteIds' | 'siteWeightMultipliers' | 'allowedSiteIds' | 'allowedCredentialRefs' | 'maxUpstreamRate'>): DownstreamRoutingPolicy {
+export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'supportedModels' | 'modelMappings' | 'allowedRouteIds' | 'siteWeightMultipliers' | 'allowedSiteIds' | 'allowedCredentialRefs' | 'minUpstreamRate' | 'maxUpstreamRate'>): DownstreamRoutingPolicy {
   return {
     supportedModels: normalizeSupportedModelsInput(view.supportedModels),
     modelMappings: normalizeModelMappingsInput(view.modelMappings),
@@ -477,6 +489,7 @@ export function toPolicyFromView(view: Pick<DownstreamApiKeyPolicyView, 'support
     siteWeightMultipliers: normalizeSiteWeightMultipliersInput(view.siteWeightMultipliers),
     allowedSiteIds: normalizeAllowedSiteIdsInput(view.allowedSiteIds),
     allowedCredentialRefs: normalizeAllowedCredentialRefsInput(view.allowedCredentialRefs),
+    minUpstreamRate: normalizeMinUpstreamRateInput(view.minUpstreamRate),
     maxUpstreamRate: normalizeMaxUpstreamRateInput(view.maxUpstreamRate),
     denyAllWhenEmpty: false,
   };
@@ -751,6 +764,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
   enabled?: unknown;
   expiresAt?: unknown;
   maxCost?: unknown;
+  minUpstreamRate?: unknown;
   maxUpstreamRate?: unknown;
   maxRequests?: unknown;
   maxRpm?: unknown;
@@ -787,6 +801,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
   }
 
   const maxCost = normalizePositiveNumberOrNull(input.maxCost);
+  const minUpstreamRate = normalizeMinUpstreamRateInput(input.minUpstreamRate);
   const maxUpstreamRate = normalizeMaxUpstreamRateInput(input.maxUpstreamRate);
   const maxRequests = normalizePositiveIntegerOrNull(input.maxRequests);
   const maxRpm = normalizePositiveIntegerOrNull(input.maxRpm);
@@ -799,6 +814,10 @@ export function normalizeDownstreamApiKeyPayload(input: {
       ? null
       : !!input.sensitiveWordDetection;
   const supportedModels = normalizeSupportedModelsInput(input.supportedModels);
+  validateSupportedModelPatterns(supportedModels);
+  if (minUpstreamRate !== null && maxUpstreamRate !== null && minUpstreamRate > maxUpstreamRate) {
+    throw new Error('上游倍率下限不能大于上限');
+  }
   const modelMappings = normalizeModelMappingsInput(input.modelMappings);
   const allowedRouteIds = normalizeAllowedRouteIdsInput(input.allowedRouteIds);
   const siteWeightMultipliers = normalizeSiteWeightMultipliersInput(input.siteWeightMultipliers);
@@ -814,6 +833,7 @@ export function normalizeDownstreamApiKeyPayload(input: {
     enabled,
     expiresAt,
     maxCost,
+    minUpstreamRate,
     maxUpstreamRate,
     maxRequests,
     maxRpm,

@@ -585,6 +585,12 @@
           "notNull": false,
           "defaultValue": null,
           "primaryKey": false
+        },
+        "min_upstream_rate": {
+          "logicalType": "real",
+          "notNull": false,
+          "defaultValue": null,
+          "primaryKey": false
         }
       }
     },

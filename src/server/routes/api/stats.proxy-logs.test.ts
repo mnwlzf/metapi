@@ -1170,6 +1170,7 @@ describe('stats proxy logs routes', () => {
         name: 'deepseek-0.3',
         key: 'sk-downstream-03',
         groupName: 'deepseek',
+        minUpstreamRate: 0.1,
         maxUpstreamRate: 0.3,
       })
       .returning()
@@ -1211,6 +1212,7 @@ describe('stats proxy logs routes', () => {
     // The rate survives the cold cache, and says where it came from.
     expect(listItem.tokenGroupRate).toBe(0.12);
     expect(listItem.tokenGroupRateSource).toBe('log');
+    expect(listItem.downstreamKeyMinUpstreamRate).toBe(0.1);
     expect(listItem.downstreamKeyMaxUpstreamRate).toBe(0.3);
     // The list only reads the snapshot out of `billing_details`; the full
     // payload stays detail-only.

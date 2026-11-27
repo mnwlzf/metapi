@@ -172,12 +172,14 @@ describe('downstream api keys routes', () => {
         key: 'sk-capped-key-001',
         enabled: true,
         // Sent as a string: the editor keeps every numeric input as text.
+        minUpstreamRate: '0.2',
         maxUpstreamRate: '0.6',
       },
     });
 
     expect(createRes.statusCode).toBe(200);
-    const created = createRes.json() as { item: { id: number; maxUpstreamRate: number | null } };
+    const created = createRes.json() as { item: { id: number; minUpstreamRate: number | null; maxUpstreamRate: number | null } };
+    expect(created.item.minUpstreamRate).toBe(0.2);
     expect(created.item.maxUpstreamRate).toBe(0.6);
 
     const keepRes = await app.inject({
@@ -186,7 +188,7 @@ describe('downstream api keys routes', () => {
       payload: { name: 'capped-key-renamed', key: 'sk-capped-key-001' },
     });
     expect(keepRes.statusCode).toBe(200);
-    expect((keepRes.json() as { item: { maxUpstreamRate: number | null } }).item.maxUpstreamRate).toBe(0.6);
+    expect((keepRes.json() as { item: { minUpstreamRate: number | null; maxUpstreamRate: number | null } }).item).toMatchObject({ minUpstreamRate: 0.2, maxUpstreamRate: 0.6 });
 
     const clearRes = await app.inject({
       method: 'PUT',

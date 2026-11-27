@@ -275,6 +275,7 @@ function mapProxyLogRow(
       name?: string | null;
       groupName?: string | null;
       tags?: string | null;
+      minUpstreamRate?: number | null;
       maxUpstreamRate?: number | null;
     } | null;
   },
@@ -345,6 +346,9 @@ function mapProxyLogRow(
     downstreamKeyId: row.downstream_api_keys?.id || null,
     downstreamKeyName: row.downstream_api_keys?.name || null,
     downstreamKeyGroupName: row.downstream_api_keys?.groupName || null,
+    downstreamKeyMinUpstreamRate: typeof row.downstream_api_keys?.minUpstreamRate === 'number'
+      ? row.downstream_api_keys.minUpstreamRate
+      : null,
     downstreamKeyMaxUpstreamRate: typeof row.downstream_api_keys?.maxUpstreamRate === 'number'
       ? row.downstream_api_keys.maxUpstreamRate
       : null,
@@ -589,6 +593,7 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
               name: schema.downstreamApiKeys.name,
               groupName: schema.downstreamApiKeys.groupName,
               tags: schema.downstreamApiKeys.tags,
+              minUpstreamRate: schema.downstreamApiKeys.minUpstreamRate,
               maxUpstreamRate: schema.downstreamApiKeys.maxUpstreamRate,
             },
           })
@@ -988,6 +993,7 @@ export function registerStatsProxyLogsRoutes(app: FastifyInstance): void {
                 name: schema.downstreamApiKeys.name,
                 groupName: schema.downstreamApiKeys.groupName,
                 tags: schema.downstreamApiKeys.tags,
+                minUpstreamRate: schema.downstreamApiKeys.minUpstreamRate,
                 maxUpstreamRate: schema.downstreamApiKeys.maxUpstreamRate,
               },
             })

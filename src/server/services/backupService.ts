@@ -104,6 +104,7 @@ type BackupDownstreamApiKeyRow = Pick<DownstreamApiKeyRow,
   | 'enabled'
   | 'expiresAt'
   | 'maxCost'
+  | 'minUpstreamRate'
   | 'maxUpstreamRate'
   | 'maxRequests'
   | 'maxRpm'
@@ -1852,6 +1853,7 @@ async function importAccountsSection(section: AccountsBackupSection): Promise<vo
           enabled: row.enabled ?? true,
           expiresAt: row.expiresAt ?? null,
           maxCost: row.maxCost ?? null,
+          minUpstreamRate: row.minUpstreamRate ?? null,
           maxUpstreamRate: row.maxUpstreamRate ?? null,
           usedCost: runtimeDownstream?.usedCost ?? row.usedCost ?? 0,
           maxRequests: row.maxRequests ?? null,

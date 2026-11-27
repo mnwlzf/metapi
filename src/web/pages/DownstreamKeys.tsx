@@ -46,6 +46,7 @@ type DownstreamApiKeyItem = {
   expiresAt: string | null;
   sensitiveWordDetection?: boolean | null;
   maxCost: number | null;
+  minUpstreamRate?: number | null;
   maxUpstreamRate?: number | null;
   usedCost: number;
   maxRequests: number | null;
@@ -321,6 +322,7 @@ function buildEditorForm(
     groupName: item?.groupName || '',
     tags: normalizeTags(Array.isArray(item?.tags) ? item!.tags : []),
     maxCost: item?.maxCost === null || item?.maxCost === undefined ? '' : String(item.maxCost),
+    minUpstreamRate: item?.minUpstreamRate === null || item?.minUpstreamRate === undefined ? '' : String(item.minUpstreamRate),
     maxUpstreamRate: item?.maxUpstreamRate === null || item?.maxUpstreamRate === undefined ? '' : String(item.maxUpstreamRate),
     maxRequests: item?.maxRequests === null || item?.maxRequests === undefined ? '' : String(item.maxRequests),
     maxRpm: item?.maxRpm === null || item?.maxRpm === undefined ? '' : String(item.maxRpm),
@@ -334,7 +336,8 @@ function buildEditorForm(
       : item?.sensitiveWordDetection === false
         ? 'off'
         : 'inherit',
-    selectedModels: uniqStrings(selectedModels),
+    selectedModels: uniqStrings(selectedModels.filter((model) => !model.toLowerCase().startsWith('re:') && !/[\*?]/.test(model))),
+    modelPatternsText: selectedModels.filter((model) => model.toLowerCase().startsWith('re:') || /[\*?]/.test(model)).join('\n'),
     selectedGroupRouteIds: uniqIds(selectedGroupRouteIds),
     siteWeightMultipliersText: JSON.stringify(item?.siteWeightMultipliers || {}, null, 2),
     allowedSiteIds: normalizeAllowedSiteIds(Array.isArray(item?.allowedSiteIds) ? item.allowedSiteIds : []),
@@ -366,9 +369,10 @@ function summarizeSiteWeightMultipliers(weights: Record<number, number> | undefi
   return `${entries[0][0]} => ${entries[0][1]} +${entries.length - 1}`;
 }
 
-function formatUpstreamRateLimit(limit: number | null | undefined): string {
-  if (limit === null || limit === undefined || !Number.isFinite(limit)) return tr('不限');
-  return `≤ ${limit}`;
+function formatUpstreamRateRange(minimum: number | null | undefined, maximum: number | null | undefined): string {
+  const min = typeof minimum === 'number' ? `≥ ${minimum}` : null;
+  const max = typeof maximum === 'number' ? `≤ ${maximum}` : null;
+  return [min, max].filter(Boolean).join('，') || tr('不限');
 }
 
 function summarizeTags(tags: string[]): string {
@@ -625,6 +629,7 @@ export default function DownstreamKeys() {
         enabled: raw?.enabled ?? item.enabled,
         expiresAt: raw?.expiresAt ?? item.expiresAt,
         maxCost: raw?.maxCost ?? item.maxCost,
+        minUpstreamRate: raw?.minUpstreamRate ?? item.minUpstreamRate ?? null,
         maxUpstreamRate: raw?.maxUpstreamRate ?? item.maxUpstreamRate ?? null,
         maxRpm: raw?.maxRpm ?? item.maxRpm ?? null,
         maxInflight: raw?.maxInflight ?? item.maxInflight ?? null,
@@ -814,6 +819,17 @@ export default function DownstreamKeys() {
       }
     }
 
+    const rawMinUpstreamRate = editorForm.minUpstreamRate.trim();
+    let parsedMinUpstreamRate: number | null = null;
+    if (rawMinUpstreamRate) {
+      const rate = Number(rawMinUpstreamRate);
+      if (!Number.isFinite(rate) || rate < 0) {
+        toast.info(tr('上游倍率下限必须是不小于 0 的数字'));
+        return;
+      }
+      parsedMinUpstreamRate = rate;
+    }
+
     const rawMaxUpstreamRate = editorForm.maxUpstreamRate.trim();
     let parsedMaxUpstreamRate: number | null = null;
     if (rawMaxUpstreamRate) {
@@ -823,6 +839,27 @@ export default function DownstreamKeys() {
         return;
       }
       parsedMaxUpstreamRate = rate;
+    }
+    if (parsedMinUpstreamRate !== null && parsedMaxUpstreamRate !== null && parsedMinUpstreamRate > parsedMaxUpstreamRate) {
+      toast.info(tr('上游倍率下限不能大于上限'));
+      return;
+    }
+
+    const modelPatterns = editorForm.modelPatternsText.split(/\r?\n/g).map((pattern) => pattern.trim()).filter(Boolean);
+    for (const pattern of modelPatterns) {
+      if (pattern.length > 256) {
+        toast.info(tr('模型白名单规则不能超过 256 个字符'));
+        return;
+      }
+      if (pattern.toLowerCase().startsWith('re:')) {
+        try {
+          if (!pattern.slice(3).trim()) throw new Error('empty');
+          new RegExp(pattern.slice(3).trim());
+        } catch {
+          toast.info(`${tr('模型白名单正则无效')}：${pattern}`);
+          return;
+        }
+      }
     }
 
     setSaving(true);
@@ -839,13 +876,14 @@ export default function DownstreamKeys() {
           : editorForm.sensitiveWordDetection === 'on',
         expiresAt: editorForm.expiresAt ? new Date(editorForm.expiresAt).toISOString() : null,
         maxCost: editorForm.maxCost.trim() ? Number(editorForm.maxCost.trim()) : null,
+        minUpstreamRate: parsedMinUpstreamRate,
         maxUpstreamRate: parsedMaxUpstreamRate,
         maxRequests: editorForm.maxRequests.trim() ? Number(editorForm.maxRequests.trim()) : null,
         maxRpm: editorForm.maxRpm.trim() ? Number(editorForm.maxRpm.trim()) : null,
         maxInflight: editorForm.maxInflight.trim() ? Number(editorForm.maxInflight.trim()) : null,
         maxDailyRequests: editorForm.maxDailyRequests.trim() ? Number(editorForm.maxDailyRequests.trim()) : null,
         maxDailyCost: editorForm.maxDailyCost.trim() ? Number(editorForm.maxDailyCost.trim()) : null,
-        supportedModels: uniqStrings(editorForm.selectedModels),
+        supportedModels: uniqStrings([...editorForm.selectedModels, ...modelPatterns]),
         allowedRouteIds: uniqIds(editorForm.selectedGroupRouteIds).filter((id) => routeMap.has(id) && isGroupRouteOption(routeMap.get(id)!)),
         siteWeightMultipliers,
         allowedSiteIds: normalizeAllowedSiteIds(editorForm.allowedSiteIds),
@@ -1199,7 +1237,7 @@ export default function DownstreamKeys() {
                   <MobileField label={tr('模型')} value={summarizeModelLimit(row.supportedModels || [])} stacked />
                   <MobileField label={tr('群组')} value={summarizeRouteLimit(row.allowedRouteIds || [], routeMap)} stacked />
                   <MobileField label={tr('站点权重倍率')} value={summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})} stacked />
-                  <MobileField label={tr('上游倍率上限')} value={formatUpstreamRateLimit(row.maxUpstreamRate)} stacked />
+                  <MobileField label={tr('上游倍率范围')} value={formatUpstreamRateRange(row.minUpstreamRate, row.maxUpstreamRate)} stacked />
                   <MobileField label={tr('额度')} value={[row.maxRequests == null ? tr('不限') : row.maxRequests.toLocaleString(), row.maxRpm ? `${row.maxRpm} RPM` : null, row.maxDailyRequests != null ? `${tr('日请求')} ${row.dailyUsedRequests || 0}/${row.maxDailyRequests}` : null, row.maxCost == null ? tr('成本不限') : `${tr('成本')} ${formatMoney(row.maxCost)}`].filter(Boolean).join(' / ')} stacked />
                   <MobileField label={tr('用量')} value={`${(row.rangeUsage?.totalRequests || 0).toLocaleString()} ${tr('请求')} · ${formatCompactTokens(row.rangeUsage?.totalTokens || 0)}`} stacked />
                   <MobileField label={tr('最近使用')} value={formatIso(row.lastUsedAt)} stacked />
@@ -1266,7 +1304,7 @@ export default function DownstreamKeys() {
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('群组：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeRouteLimit(row.allowedRouteIds || [], routeMap)}</span></div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('标签：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeTags(row.tags || [])}</span></div>
                           <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('站点权重倍率：')}<span style={{ color: 'var(--color-text-primary)' }}>{summarizeSiteWeightMultipliers(row.siteWeightMultipliers || {})}</span></div>
-                          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('倍率上限：')}<span style={{ color: row.maxUpstreamRate == null ? 'var(--color-text-primary)' : 'var(--color-warning)' }}>{formatUpstreamRateLimit(row.maxUpstreamRate)}</span></div>
+                          <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('倍率范围：')}<span style={{ color: row.minUpstreamRate == null && row.maxUpstreamRate == null ? 'var(--color-text-primary)' : 'var(--color-warning)' }}>{formatUpstreamRateRange(row.minUpstreamRate, row.maxUpstreamRate)}</span></div>
                         </div>
                       </td>
                       <td style={{ fontVariantNumeric: 'tabular-nums' }}>

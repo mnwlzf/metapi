@@ -467,6 +467,8 @@ export type ProxyLogListItem = {
   downstreamKeyId?: number | null;
   downstreamKeyName?: string | null;
   downstreamKeyGroupName?: string | null;
+  /** The key's configured upstream rate floor (`min_upstream_rate`), null = none. */
+  downstreamKeyMinUpstreamRate?: number | null;
   /** The key's configured upstream rate ceiling (`max_upstream_rate`), null = none. */
   downstreamKeyMaxUpstreamRate?: number | null;
   /**

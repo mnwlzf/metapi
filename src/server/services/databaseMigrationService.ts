@@ -722,7 +722,7 @@ function buildStatements(
   for (const row of snapshot.accounts.downstreamApiKeys) {
     statements.push({
       table: 'downstream_api_keys',
-      columns: ['id', 'name', 'key', 'description', 'group_name', 'tags', 'enabled', 'expires_at', 'max_cost', 'max_upstream_rate', 'used_cost', 'max_requests', 'used_requests', 'max_rpm', 'max_inflight', 'max_daily_requests', 'max_daily_cost', 'daily_used_requests', 'daily_used_cost', 'daily_window_date', 'sensitive_word_detection', 'supported_models', 'model_mappings', 'allowed_route_ids', 'site_weight_multipliers', 'allowed_site_ids', 'allowed_credential_refs', 'last_used_at', 'created_at', 'updated_at'],
+      columns: ['id', 'name', 'key', 'description', 'group_name', 'tags', 'enabled', 'expires_at', 'max_cost', 'min_upstream_rate', 'max_upstream_rate', 'used_cost', 'max_requests', 'used_requests', 'max_rpm', 'max_inflight', 'max_daily_requests', 'max_daily_cost', 'daily_used_requests', 'daily_used_cost', 'daily_window_date', 'sensitive_word_detection', 'supported_models', 'model_mappings', 'allowed_route_ids', 'site_weight_multipliers', 'allowed_site_ids', 'allowed_credential_refs', 'last_used_at', 'created_at', 'updated_at'],
       values: [
         asNumber(row.id, 0),
         asNullableString(row.name),
@@ -733,6 +733,7 @@ function buildStatements(
         asBoolean(row.enabled, true),
         asNullableString(row.expiresAt),
         asNumber(row.maxCost, null),
+        asNumber(row.minUpstreamRate, null),
         asNumber(row.maxUpstreamRate, null),
         asNumber(row.usedCost, 0),
         asNumber(row.maxRequests, null),

@@ -1796,17 +1796,15 @@ export default function ProxyLogs() {
                           : tr('未知')}${detailLog.tokenGroupRateSource === 'log' ? ` ${tr('（请求时倍率）')}` : ''}`}
                       />
                       <MobileField
-                        label={tr('密钥倍率上限')}
-                        value={detailLog.downstreamKeyMaxUpstreamRate == null
-                          ? tr('不限')
-                          : formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}
+                        label={tr('密钥倍率范围')}
+                        value={`${detailLog.downstreamKeyMinUpstreamRate == null ? tr('不限下限') : `≥ ${formatCompactNumber(detailLog.downstreamKeyMinUpstreamRate)}`} · ${detailLog.downstreamKeyMaxUpstreamRate == null ? tr('不限上限') : `≤ ${formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}`}`}
                       />
                       <MobileField
                         label={tr('倍率判定')}
                         value={(() => {
                           const rateCap = resolveRateCapDisplay(detailLog);
                           return rateCap.tone === 'over'
-                            ? tr('超出上限')
+                            ? tr('超出范围')
                             : rateCap.tone === 'ok'
                               ? tr('在范围内')
                               : tr('未知');
@@ -2435,20 +2433,14 @@ export default function ProxyLogs() {
                                           ? <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{tr('（请求时倍率）')}</span>
                                           : null}
                                       </div>
-                                      <div>{tr('密钥倍率上限：')}<strong style={{ color: 'var(--color-text-primary)' }}>
-                                          {detailLog.downstreamKeyMaxUpstreamRate == null
-                                            ? tr('不限')
-                                            : formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}
+                                      <div>{tr('密钥倍率范围：')}<strong style={{ color: 'var(--color-text-primary)' }}>
+                                          {detailLog.downstreamKeyMinUpstreamRate == null ? tr('不限下限') : `≥ ${formatCompactNumber(detailLog.downstreamKeyMinUpstreamRate)}`}
+                                          {' · '}
+                                          {detailLog.downstreamKeyMaxUpstreamRate == null ? tr('不限上限') : `≤ ${formatCompactNumber(detailLog.downstreamKeyMaxUpstreamRate)}`}
                                         </strong>
                                         {typeof detailLog.tokenGroupRate === 'number'
-                                          && typeof detailLog.downstreamKeyMaxUpstreamRate === 'number'
-                                          ? (
-                                            <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>
-                                              {detailLog.tokenGroupRate <= detailLog.downstreamKeyMaxUpstreamRate
-                                                ? tr('（在范围内）')
-                                                : tr('（超出上限）')}
-                                            </span>
-                                          )
+                                          && (typeof detailLog.downstreamKeyMinUpstreamRate === 'number' || typeof detailLog.downstreamKeyMaxUpstreamRate === 'number')
+                                          ? <span style={{ fontSize: 10, color: 'var(--color-text-muted)' }}>{resolveRateCapDisplay(detailLog).tone === 'ok' ? tr('（在范围内）') : tr('（超出范围）')}</span>
                                           : null}
                                       </div>
                                     </div>

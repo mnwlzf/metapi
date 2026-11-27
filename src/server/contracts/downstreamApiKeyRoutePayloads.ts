@@ -23,6 +23,7 @@ const downstreamApiKeyPayloadSchema = z.object({
   enabled: z.boolean().optional(),
   expiresAt: z.union([z.string(), z.null()]).optional(),
   maxCost: z.union([z.number(), z.string(), z.null()]).optional(),
+  minUpstreamRate: z.union([z.number(), z.string(), z.null()]).optional(),
   maxUpstreamRate: z.union([z.number(), z.string(), z.null()]).optional(),
   maxRequests: z.union([z.number(), z.string(), z.null()]).optional(),
   sensitiveWordDetection: z.union([z.boolean(), z.null()]).optional(),
@@ -85,6 +86,9 @@ function formatDownstreamApiKeyPayloadError(error: z.ZodError): string {
   }
   if (firstPath === 'maxUpstreamRate') {
     return 'Invalid maxUpstreamRate. Expected number, string, or null.';
+  }
+  if (firstPath === 'minUpstreamRate') {
+    return 'Invalid minUpstreamRate. Expected number, string, or null.';
   }
   if (firstPath === 'maxRequests') {
     return 'Invalid maxRequests. Expected number, string, or null.';

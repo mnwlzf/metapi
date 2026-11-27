@@ -647,9 +647,13 @@ describe('DownstreamKeys page', () => {
       const inputs = root!.root.findAllByType('input');
       const nameInput = inputs.find((node) => node.props.placeholder === '例如：项目 A / 移动端');
       const keyInput = inputs.find((node) => node.props.placeholder === 'sk-...');
+      const rateFloorInput = inputs.find((node) => node.props['aria-label'] === '上游倍率下限');
+      const modelRules = root!.root.findAllByType('textarea').find((node) => node.props['aria-label'] === '模型匹配规则');
       await act(async () => {
         nameInput!.props.onChange({ target: { value: 'select-all-key' } });
         keyInput!.props.onChange({ target: { value: 'sk-select-all-key-0319' } });
+        rateFloorInput!.props.onChange({ target: { value: '0.2' } });
+        modelRules!.props.onChange({ target: { value: 're:^gpt-5.*$' } });
       });
       await flushMicrotasks();
 
@@ -662,7 +666,8 @@ describe('DownstreamKeys page', () => {
       expect(apiMock.createDownstreamApiKey).toHaveBeenCalledWith(expect.objectContaining({
         name: 'select-all-key',
         key: 'sk-select-all-key-0319',
-        supportedModels: ['claude-opus-4-6', 'gpt-4.1-mini'],
+        minUpstreamRate: 0.2,
+        supportedModels: ['claude-opus-4-6', 'gpt-4.1-mini', 're:^gpt-5.*$'],
         allowedRouteIds: [11, 13],
       }));
     } finally {

@@ -114,8 +114,15 @@ describe('downstreamApiKeyService', () => {
     expect(result.policy.siteWeightMultipliers[7]).toBeCloseTo(0.4);
 
     expect(service.isModelAllowedByPolicy('claude-opus-4-6', result.policy)).toBe(true);
+    expect(service.isModelAllowedByPolicy('gpt-5.7-preview', { ...result.policy, supportedModels: ['re:^gpt-5.*$'] })).toBe(true);
     expect(service.isModelAllowedByPolicy('gpt-4o-mini', result.policy)).toBe(true);
     expect(service.isModelAllowedByPolicy('gemini-2.0-flash', result.policy)).toBe(false);
+  });
+
+  it('rejects invalid regex whitelist rules and inverted upstream rate ranges', () => {
+    expect(() => service.normalizeDownstreamApiKeyPayload({ supportedModels: ['re:['] })).toThrow('模型白名单正则无效');
+    expect(() => service.normalizeDownstreamApiKeyPayload({ minUpstreamRate: 0.8, maxUpstreamRate: 0.6 })).toThrow('下限不能大于上限');
+    expect(service.normalizeDownstreamApiKeyPayload({ minUpstreamRate: 0 }).minUpstreamRate).toBe(0);
   });
 
   it('keeps all explicitly selected supported models when list exceeds 200 items', () => {

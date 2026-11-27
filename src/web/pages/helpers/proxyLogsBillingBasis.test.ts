@@ -163,6 +163,10 @@ describe('billing detail display by basis', () => {
       .toEqual({ label: '0.12 / <=0.3', tone: 'ok' });
     expect(resolveRateCapDisplay({ tokenGroupRate: 0.5, downstreamKeyMaxUpstreamRate: 0.3 } as ProxyLogRenderItem).tone)
       .toBe('over');
+    expect(resolveRateCapDisplay({ tokenGroupRate: 0.2, downstreamKeyMinUpstreamRate: 0.3, downstreamKeyMaxUpstreamRate: 0.8 } as ProxyLogRenderItem))
+      .toEqual({ label: '0.2 / >=0.3 <=0.8', tone: 'over' });
+    expect(resolveRateCapDisplay({ tokenGroupRate: 0.5, downstreamKeyMinUpstreamRate: 0.3 } as ProxyLogRenderItem))
+      .toEqual({ label: '0.5 / >=0.3', tone: 'ok' });
     expect(resolveRateCapDisplay({ tokenGroupRate: null, downstreamKeyMaxUpstreamRate: 0.3 } as ProxyLogRenderItem).tone)
       .toBe('unknown');
     expect(resolveRateCapDisplay({ tokenGroupRate: 0.12, downstreamKeyMaxUpstreamRate: null } as ProxyLogRenderItem))

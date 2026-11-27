@@ -25,6 +25,7 @@ export type DownstreamKeyEditorForm = {
   groupName: string;
   tags: string[];
   maxCost: string;
+  minUpstreamRate: string;
   maxUpstreamRate: string;
   maxRequests: string;
   maxRpm: string;
@@ -35,6 +36,7 @@ export type DownstreamKeyEditorForm = {
   enabled: boolean;
   sensitiveWordDetection: 'inherit' | 'on' | 'off';
   selectedModels: string[];
+  modelPatternsText: string;
   selectedGroupRouteIds: number[];
   siteWeightMultipliersText: string;
   allowedSiteIds: number[];
@@ -339,7 +341,7 @@ export default function DownstreamKeyEditorModal({
     ));
   }, [credentialOptions, credentialSearch]);
 
-  const selectedModelCount = form.selectedModels.length;
+  const selectedModelCount = form.selectedModels.length + form.modelPatternsText.split(/\r?\n/g).filter((pattern) => pattern.trim()).length;
   const selectedGroupCount = normalizedSelectedGroupRouteIds.length;
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -429,15 +431,25 @@ export default function DownstreamKeyEditorModal({
           <input value={form.maxCost} onChange={(e) => onChange((prev) => ({ ...prev, maxCost: e.target.value }))} placeholder={tr('留空表示不限')} style={inputStyle} />
         </div>
         <div className="downstream-key-modal-field">
-          <div className="downstream-key-modal-label">{tr('上游倍率上限')}</div>
-          <input
-            value={form.maxUpstreamRate}
-            onChange={(e) => onChange((prev) => ({ ...prev, maxUpstreamRate: e.target.value }))}
-            placeholder={tr('例如：0.6，留空表示不限')}
-            style={inputStyle}
-          />
+          <div className="downstream-key-modal-label">{tr('上游倍率范围')}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+            <input
+              aria-label={tr('上游倍率下限')}
+              value={form.minUpstreamRate}
+              onChange={(e) => onChange((prev) => ({ ...prev, minUpstreamRate: e.target.value }))}
+              placeholder={tr('下限，不限留空')}
+              style={inputStyle}
+            />
+            <input
+              aria-label={tr('上游倍率上限')}
+              value={form.maxUpstreamRate}
+              onChange={(e) => onChange((prev) => ({ ...prev, maxUpstreamRate: e.target.value }))}
+              placeholder={tr('上限，不限留空')}
+              style={inputStyle}
+            />
+          </div>
           <div className="downstream-key-modal-help">
-            {tr('只允许路由到上游消耗倍率不超过该值的分组；留空不限制。倍率取不到时按保守策略排除。')}
+            {tr('仅使用倍率处于所填范围内的上游分组；留空的一侧不限制。倍率取不到时按保守策略排除。')}
           </div>
         </div>
         <div className="downstream-key-modal-field">
@@ -516,11 +528,11 @@ export default function DownstreamKeyEditorModal({
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
                   <div>
                     <div className="downstream-key-modal-section-title">{tr('模型白名单')}</div>
-                    <div className="downstream-key-modal-help">{tr('留空表示放行所有模型；勾选后仅允许所选精确模型，新增模型需手动补充。')}</div>
+                    <div className="downstream-key-modal-help">{tr('留空表示放行所有模型；可勾选精确模型，也可添加正则或通配规则。')}</div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <button type="button" className="btn btn-ghost btn-outline" onClick={() => onChange((prev) => ({ ...prev, selectedModels: exactModels }))}>{tr('全选')}</button>
-          <button type="button" className="btn btn-ghost btn-outline" onClick={() => onChange((prev) => ({ ...prev, selectedModels: [] }))}>{tr('清空')}</button>
+          <button type="button" className="btn btn-ghost btn-outline" onClick={() => onChange((prev) => ({ ...prev, selectedModels: [...exactModels, ...prev.selectedModels.filter((model) => !isExactModelPattern(model))] }))}>{tr('全选')}</button>
+          <button type="button" className="btn btn-ghost btn-outline" onClick={() => onChange((prev) => ({ ...prev, selectedModels: [], modelPatternsText: '' }))}>{tr('清空')}</button>
                   </div>
                 </div>
                 <div className="downstream-key-modal-meta">已选 {selectedModelCount} 个模型</div>
@@ -530,6 +542,18 @@ export default function DownstreamKeyEditorModal({
                   </svg>
                   <input value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} placeholder={tr('搜索模型')} />
                 </div>
+                <label className="downstream-key-modal-field">
+                  <span className="downstream-key-modal-label">{tr('模型匹配规则')}</span>
+                  <textarea
+                    aria-label={tr('模型匹配规则')}
+                    value={form.modelPatternsText}
+                    onChange={(e) => onChange((prev) => ({ ...prev, modelPatternsText: e.target.value }))}
+                    placeholder={'re:^gpt-5.*$\nclaude-*'}
+                    rows={3}
+                    style={{ ...inputStyle, resize: 'vertical', fontFamily: 'var(--font-mono)' }}
+                  />
+                  <span className="downstream-key-modal-help">{tr('每行一条；正则以 re: 开头，普通规则支持 * 和 ? 通配。')}</span>
+                </label>
                 <div style={{ maxHeight: 280, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {filteredModels.length === 0 ? (
                     <div style={{ fontSize: 12, color: 'var(--color-text-muted)' }}>{tr('暂无匹配模型')}</div>

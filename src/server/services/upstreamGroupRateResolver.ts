@@ -179,25 +179,26 @@ export type UpstreamRateLimitVerdict =
   | { allowed: true }
   | { allowed: false; message: string; details: Record<string, unknown> };
 
-/**
- * The rate ceiling rule itself: a key declaring `limit` may only be dispatched
- * to groups whose multiplier is `<= limit`. Unknown multipliers are refused —
- * the whole point of declaring a ceiling is not to route on hope.
- */
-export function evaluateUpstreamRateLimit(
+/** A configured range is a hard eligibility rule; unknown rates fail closed. */
+export function evaluateUpstreamRateRange(
   input: UpstreamGroupRateInput,
-  limit: number | null,
+  minimum: number | null,
+  maximum: number | null,
 ): UpstreamRateLimitVerdict {
-  if (limit === null || !Number.isFinite(limit) || limit < 0) return { allowed: true };
+  const min = minimum !== null && Number.isFinite(minimum) && minimum >= 0 ? minimum : null;
+  const max = maximum !== null && Number.isFinite(maximum) && maximum >= 0 ? maximum : null;
+  if (min === null && max === null) return { allowed: true };
+  const rangeText = `${min === null ? '不限下限' : formatRate(min)} 至 ${max === null ? '不限上限' : formatRate(max)}`;
 
   const resolution = resolveUpstreamGroupRate(input);
   if (!resolution.known) {
     requestUpstreamGroupRateWarmup(input);
     return {
       allowed: false,
-      message: `上游分组倍率未知（分组=${resolution.groupKey}，密钥上限=${formatRate(limit)}），已按保守策略排除`,
+      message: `上游分组倍率未知（分组=${resolution.groupKey}，密钥范围=${rangeText}），已按保守策略排除`,
       details: {
-        upstreamRateLimit: limit,
+        upstreamRateMinimum: min,
+        upstreamRateMaximum: max,
         upstreamRate: null,
         upstreamRateSource: null,
         upstreamGroupKey: resolution.groupKey,
@@ -206,12 +207,28 @@ export function evaluateUpstreamRateLimit(
     };
   }
 
-  if (resolution.rate > limit + RATE_EPSILON) {
+  if (min !== null && resolution.rate < min - RATE_EPSILON) {
     return {
       allowed: false,
-      message: `上游分组倍率 ${formatRate(resolution.rate)} > 密钥上限 ${formatRate(limit)}（分组=${resolution.groupKey}）`,
+      message: `上游分组倍率 ${formatRate(resolution.rate)} < 密钥下限 ${formatRate(min)}（分组=${resolution.groupKey}）`,
       details: {
-        upstreamRateLimit: limit,
+        upstreamRateMinimum: min,
+        upstreamRateMaximum: max,
+        upstreamRate: resolution.rate,
+        upstreamRateSource: resolution.source,
+        upstreamGroupKey: resolution.groupKey,
+        upstreamRateUnknown: false,
+      },
+    };
+  }
+
+  if (max !== null && resolution.rate > max + RATE_EPSILON) {
+    return {
+      allowed: false,
+      message: `上游分组倍率 ${formatRate(resolution.rate)} > 密钥上限 ${formatRate(max)}（分组=${resolution.groupKey}）`,
+      details: {
+        upstreamRateMinimum: min,
+        upstreamRateMaximum: max,
         upstreamRate: resolution.rate,
         upstreamRateSource: resolution.source,
         upstreamGroupKey: resolution.groupKey,
@@ -221,6 +238,16 @@ export function evaluateUpstreamRateLimit(
   }
 
   return { allowed: true };
+}
+
+/** Backward-compatible ceiling-only helper. */
+export function evaluateUpstreamRateLimit(input: UpstreamGroupRateInput, limit: number | null): UpstreamRateLimitVerdict {
+  const verdict = evaluateUpstreamRateRange(input, null, limit);
+  if (verdict.allowed) return verdict;
+  return {
+    ...verdict,
+    details: { ...verdict.details, upstreamRateLimit: limit },
+  };
 }
 
 function formatRate(value: number): string {

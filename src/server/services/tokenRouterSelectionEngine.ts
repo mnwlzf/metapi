@@ -31,7 +31,7 @@ import { ConnectivityLookup, ConnectivitySignal, loadConnectivityLookup, resolve
 import { siteProtocolAffinityFactor } from '../shared/siteProtocolProfile.js';
 import { RouteDecisionCandidate, RouteDecisionReasonCode } from '../../shared/tokenRouteContract.js';
 import { resolveEffectiveUnitCost } from './routeStickyPreferencePolicy.js';
-import { evaluateUpstreamRateLimit, type UpstreamGroupRateInput } from './upstreamGroupRateResolver.js';
+import { evaluateUpstreamRateRange, type UpstreamGroupRateInput } from './upstreamGroupRateResolver.js';
 import type {
   CandidateEligibilityOptions,
   CandidateEligibilityReason,
@@ -945,10 +945,11 @@ export function resolveUpstreamRateExclusionReason(
   candidate: RouteChannelCandidate,
   downstreamPolicy?: DownstreamRoutingPolicy,
 ): { message: string; details: Record<string, unknown> } | null {
-  const limit = downstreamPolicy?.maxUpstreamRate ?? null;
-  if (limit === null) return null;
+  const minimum = downstreamPolicy?.minUpstreamRate ?? null;
+  const maximum = downstreamPolicy?.maxUpstreamRate ?? null;
+  if (minimum === null && maximum === null) return null;
 
-  const verdict = evaluateUpstreamRateLimit({
+  const verdict = evaluateUpstreamRateRange({
     site: {
       id: candidate.site.id,
       url: candidate.site.url,
@@ -962,7 +963,7 @@ export function resolveUpstreamRateExclusionReason(
     },
     token: candidate.token ? { tokenGroup: candidate.token.tokenGroup } : null,
     channel: { sourceModel: candidate.channel.sourceModel },
-  } satisfies UpstreamGroupRateInput, limit);
+  } satisfies UpstreamGroupRateInput, minimum, maximum);
 
   return verdict.allowed ? null : { message: verdict.message, details: verdict.details };
 }

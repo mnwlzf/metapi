@@ -632,6 +632,7 @@ export const downstreamApiKeys = sqliteTable('downstream_api_keys', {
   enabled: integer('enabled', { mode: 'boolean' }).default(true),
   expiresAt: text('expires_at'),
   maxCost: real('max_cost'),
+  minUpstreamRate: real('min_upstream_rate'),
   // Upper bound on the upstream group consumption multiplier (上游消耗倍率)
   // this key may be routed through. null = no bound. Enforced by the router as
   // a hard eligibility filter, so a key sold at 0.6x can never land on a 0.8x

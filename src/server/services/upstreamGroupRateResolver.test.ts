@@ -36,6 +36,7 @@ const { getCachedGroupRate, requestRoutingReferenceCostWarmup } = await import('
 const { peekAccountGroupCatalog, requestAccountGroupCatalogWarmup } = await import('./accountGroupCatalogService.js');
 const {
   __resetUpstreamGroupRateReadWarmupForTests,
+  evaluateUpstreamRateRange,
   evaluateUpstreamRateLimit,
   requestUpstreamGroupRateReadWarmup,
   requestUpstreamGroupRateWarmup,
@@ -246,5 +247,29 @@ describe('evaluateUpstreamRateLimit', () => {
 
     vi.mocked(getCachedGroupRate).mockReturnValue(0);
     expect(evaluateUpstreamRateLimit(candidate('free'), 0)).toEqual({ allowed: true });
+  });
+});
+
+describe('evaluateUpstreamRateRange', () => {
+  it('enforces a lower bound while leaving the unconfigured upper side open', () => {
+    vi.mocked(getCachedGroupRate).mockReturnValue(0.6);
+    expect(evaluateUpstreamRateRange(candidate('vip'), 0.6, null)).toEqual({ allowed: true });
+
+    vi.mocked(getCachedGroupRate).mockReturnValue(0.5);
+    const verdict = evaluateUpstreamRateRange(candidate('vip'), 0.6, null);
+    expect(verdict.allowed).toBe(false);
+    if (verdict.allowed) throw new Error('unreachable');
+    expect(verdict.message).toContain('下限');
+    expect(verdict.details).toMatchObject({ upstreamRateMinimum: 0.6, upstreamRateMaximum: null, upstreamRate: 0.5 });
+  });
+
+  it('enforces both inclusive boundaries and refuses unknown rates', () => {
+    vi.mocked(getCachedGroupRate).mockReturnValue(0.8);
+    expect(evaluateUpstreamRateRange(candidate('vip'), 0.6, 0.8)).toEqual({ allowed: true });
+    expect(evaluateUpstreamRateRange(candidate('vip'), 0.6, 0.7).allowed).toBe(false);
+
+    vi.mocked(getCachedGroupRate).mockReturnValue(null);
+    vi.mocked(peekAccountGroupCatalog).mockReturnValue(null);
+    expect(evaluateUpstreamRateRange(candidate('mystery'), 0.6, null).allowed).toBe(false);
   });
 });

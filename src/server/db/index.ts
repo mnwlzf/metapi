@@ -659,6 +659,7 @@ function ensureDownstreamApiKeySchema() {
       enabled integer DEFAULT true,
       expires_at text,
       max_cost real,
+      min_upstream_rate real,
       used_cost real DEFAULT 0,
       max_requests integer,
       used_requests integer DEFAULT 0,
@@ -712,6 +713,10 @@ function ensureDownstreamApiKeySchema() {
 
   if (!tableColumnExists('downstream_api_keys', 'allowed_credential_refs')) {
     execSqliteLegacyCompat('ALTER TABLE downstream_api_keys ADD COLUMN allowed_credential_refs text;');
+  }
+
+  if (!tableColumnExists('downstream_api_keys', 'min_upstream_rate')) {
+    execSqliteLegacyCompat('ALTER TABLE downstream_api_keys ADD COLUMN min_upstream_rate real;');
   }
 }
 

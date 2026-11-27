@@ -162,6 +162,27 @@ describe('TokenRouter upstream rate ceiling', () => {
     expect(candidate?.reasonCodes ?? []).not.toContain('upstream_rate_exceeded');
   });
 
+  it('enforces the upstream rate floor and selects only groups at or above it', async () => {
+    const pricey = await seedChannel('gpt-4o-mini', 'grp08', 'sk-at-floor');
+    const cheap = await seedChannel('gpt-4o-mini', 'grp06', 'sk-below-floor');
+    const boundedPolicy = policy({
+      allowedRouteIds: [cheap.route.id, pricey.route.id],
+      minUpstreamRate: 0.7,
+    });
+
+    const router = new TokenRouter();
+    const priceyDecision = await router.explainSelectionForRoute(pricey.route.id, 'gpt-4o-mini', [], boundedPolicy);
+    expect(priceyDecision.candidates.find((item) => item.channelId === pricey.channel.id)?.eligible).toBe(true);
+    const pick = await router.selectChannel('gpt-4o-mini', boundedPolicy);
+    expect(pick?.channel.id).toBe(pricey.channel.id);
+
+    const decision = await router.explainSelectionForRoute(cheap.route.id, 'gpt-4o-mini', [], boundedPolicy);
+    const denied = decision.candidates.find((item) => item.channelId === cheap.channel.id);
+    expect(denied?.eligible).toBe(false);
+    expect(denied?.reasonCodes).toContain('upstream_rate_exceeded');
+    expect(denied?.reason).toContain('下限');
+  });
+
   it('refuses a channel whose group rate is unknown (fail closed)', async () => {
     const unknown = await seedChannel('gpt-4o-mini', 'group-not-in-catalog', 'sk-unknown');
     const strictPolicy = policy({
