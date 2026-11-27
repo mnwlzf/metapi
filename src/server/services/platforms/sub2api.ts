@@ -35,19 +35,33 @@ const SUB2API_GROUP_CATALOG_MAX_PAGES = 20;
 export class Sub2ApiAdapter extends BasePlatformAdapter {
   readonly platformName = 'sub2api';
 
-  async getUsageKeyCatalog(baseUrl: string, accessToken: string): Promise<ApiTokenInfo[]> {
-    const endpoint = '/api/v1/keys?page=1&page_size=100';
+  async getUsageKeyCatalog(baseUrl: string, accessToken: string, page = 1): Promise<{ items: ApiTokenInfo[]; nextPage: number | null }> {
+    if (!Number.isSafeInteger(page) || page < 1 || page > 100) throw new Error('上游 Key 目录页码超出范围');
+    const endpoint = `/api/v1/keys?page=${page}&page_size=100`;
     const response = await this.fetchUsageEndpoint(baseUrl, accessToken, endpoint);
-    return this.parseTokenItems(response).map((item) => ({
+    const source = response as { items?: unknown[]; list?: unknown[]; total?: number; page?: number; page_size?: number };
+    const raw = Array.isArray(response) ? response : source?.items ?? source?.list;
+    if (!Array.isArray(raw) || raw.length > 100 || (source.page !== undefined && source.page !== page)) throw new Error('上游 Key 目录分页格式无效');
+    const items = this.parseTokenItems(response, true).map((item) => ({
       upstreamId: item.id, name: item.name, key: item.key, enabled: item.enabled, tokenGroup: item.tokenGroup,
     }));
+    if (items.length !== raw.length || new Set(items.map((item) => item.upstreamId)).size !== items.length) throw new Error('上游 Key 目录包含无效或重复 ID');
+    const total = Number(source.total);
+    const pageSize = Number(source.page_size) || 100;
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) throw new Error('上游 Key 目录分页大小无效');
+    if (source.total !== undefined && (!Number.isSafeInteger(total) || total < 0 || raw.length !== Math.min(pageSize, Math.max(0, total - (page - 1) * pageSize)))) throw new Error('上游 Key 目录分页数量不完整');
+    const hasMore = Number.isSafeInteger(total) && total >= 0 ? page * pageSize < total : raw.length === pageSize;
+    if (hasMore && (!raw.length || page >= 100)) throw new Error('上游 Key 目录未完整获取');
+    return { items, nextPage: hasMore ? page + 1 : null };
   }
 
-  private async fetchUsageEndpoint(baseUrl: string, accessToken: string, endpoint: string): Promise<unknown> {
+  private async fetchUsageEndpoint(baseUrl: string, accessToken: string, endpoint: string, apiKeyIds?: number[]): Promise<unknown> {
     const { fetch } = await import('undici');
     const url = `${this.resolveManagementBaseUrl(baseUrl)}${endpoint}`;
     const response = await fetch(url, await withSiteProxyRequestInit(url, withManagementRequestTimeout({
-      headers: this.buildAuthHeader(accessToken),
+      method: apiKeyIds ? 'POST' : 'GET',
+      headers: { ...this.buildAuthHeader(accessToken), ...(apiKeyIds ? { 'Content-Type': 'application/json' } : {}) },
+      ...(apiKeyIds ? { body: JSON.stringify({ api_key_ids: apiKeyIds }) } : {}),
     })));
     if (!response.ok) {
       const retry = response.headers.get('retry-after');
@@ -59,9 +73,17 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
   }
 
   async getUsageDashboard(baseUrl: string, accessToken: string, input: {
-    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string;
+    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string; apiKeyIds?: number[];
   }) {
     const endpoint = `/api/v1/usage/dashboard/${input.kind === 'keys' ? 'api-keys-usage' : input.kind}`;
+    if (input.kind === 'keys') {
+      const ids = input.apiKeyIds;
+      if (!ids || ids.length > 100 || ids.some((id) => !Number.isSafeInteger(id) || id <= 0) || new Set(ids).size !== ids.length) throw new Error('Key 消费查询需要最多 100 个有效且不重复的上游 Key ID');
+      if (!ids.length) return [];
+      const keys = parseUsageKeys(await this.fetchUsageEndpoint(baseUrl, accessToken, endpoint, ids));
+      if (keys.length !== ids.length || new Set(keys.map((key) => key.upstreamId)).size !== ids.length || keys.some((key) => !ids.includes(key.upstreamId))) throw new Error('上游未返回完整的所请求 Key 消费，请刷新 Key 目录后重试');
+      return keys;
+    }
     const query = new URLSearchParams({ timezone: input.timeZone });
     if (input.kind === 'models') {
       query.set('start_date', input.day);
@@ -69,7 +91,6 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     }
     const data = await this.fetchUsageEndpoint(baseUrl, accessToken, `${endpoint}?${query}`);
     if (input.kind === 'stats') return parseUsageStats(data);
-    if (input.kind === 'keys') return parseUsageKeys(data);
     const range = data as { start_date?: string; end_date?: string };
     if (range.start_date !== input.day || range.end_date !== input.day) throw new Error('上游返回的模型统计日期与请求不一致');
     return parseUsageModels(data);
@@ -300,7 +321,7 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     return true;
   }
 
-  private parseTokenItems(payload: any): Array<{ id: number; key: string; name: string; enabled: boolean; tokenGroup: string | null }> {
+  private parseTokenItems(payload: any, allowMissingKey = false): Array<{ id: number; key: string; name: string; enabled: boolean; tokenGroup: string | null }> {
     const source = payload?.data ?? payload;
     const rawItems = (() => {
       if (Array.isArray(source)) return source;
@@ -313,9 +334,9 @@ export class Sub2ApiAdapter extends BasePlatformAdapter {
     const items: Array<{ id: number; key: string; name: string; enabled: boolean; tokenGroup: string | null }> = [];
     for (const item of rawItems) {
       const key = typeof item?.key === 'string' ? item.key.trim() : '';
-      if (!key) continue;
+      if (!key && !allowMissingKey) continue;
       const id = Number.parseInt(String(item?.id), 10);
-      if (!Number.isFinite(id) || id <= 0) continue;
+      if (!Number.isSafeInteger(id) || id <= 0 || (allowMissingKey && Number(item?.id) !== id)) continue;
       const name = typeof item?.name === 'string' && item.name.trim()
         ? item.name.trim()
         : `token-${id}`;

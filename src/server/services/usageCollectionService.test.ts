@@ -29,7 +29,7 @@ describe('background consumption collection', () => {
     await db.insert(schema.sites).values({ id: 1, name: 'test', url: 'https://offline.invalid', platform: 'sub2api' }).run();
     await db.insert(schema.accounts).values({ id: 1, siteId: 1, accessToken: 'offline-session', extraConfig: JSON.stringify({ credentialMode: 'session', platformUserId: 13 }) }).run();
     mocks.fetch.mockResolvedValue({ today: { actualCost: 0.123456789 }, total: { actualCost: 3 }, platforms: [] });
-    mocks.catalog.mockResolvedValue([]);
+    mocks.catalog.mockResolvedValue({ items: [], nextPage: null });
   });
   afterAll(async () => {
     await service.stopUsageCollectionScheduler();
@@ -155,5 +155,24 @@ describe('background consumption collection', () => {
     expect((await store.readUsageAccountState(1))!.requestTimes).toHaveLength(2);
     await service.runUsageCollectionPass();
     expect(mocks.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('collects a complete catalog before querying POST Key batches', async () => {
+    const state = await due();
+    for (const task of Object.values(state.tasks)) task.nextAt = Date.now() + 86400_000;
+    state.tasks.keys.nextAt = 0;
+    await store.storeUsageAccountState(1, state);
+    const { upsertSetting } = await import('../db/upsertSetting.js');
+    await upsertSetting('usage_collection_origins', {});
+    mocks.catalog.mockResolvedValue({ items: [{ upstreamId: 13, name: 'key-13', key: 'sk-13' }], nextPage: null });
+    await service.runUsageCollectionPass();
+    expect(mocks.catalog).toHaveBeenCalledWith(expect.any(String), 'offline-session', 1);
+    const afterCatalog = (await store.readUsageAccountState(1))!;
+    afterCatalog.tasks.keys.nextAt = 0;
+    await store.storeUsageAccountState(1, afterCatalog);
+    await upsertSetting('usage_collection_origins', {});
+    mocks.fetch.mockResolvedValue([{ upstreamId: 13, todayActualCost: 0.23, recentActualCost: 3.45 }]);
+    await service.runUsageCollectionPass();
+    expect(mocks.fetch).toHaveBeenCalledWith(expect.any(String), 'offline-session', { kind: 'keys', day: expect.any(String), timeZone: 'Asia/Shanghai', apiKeyIds: [13] });
+    expect((await service.getUsageOverview()).records.find((record) => record.kind === 'keys')?.data).toEqual([{ upstreamId: 13, todayActualCost: 0.23, recentActualCost: 3.45 }]);
   });
 });

@@ -38,6 +38,52 @@ describe('Sub2ApiAdapter', () => {
     expect(await adapter.detect('https://example.com')).toBe(false);
   });
 
+  it('posts explicit upstream Key IDs as JSON without changing stats and model GET requests', async () => {
+    const requests: Array<{ method?: string; url?: string; body: string; auth?: string; contentType?: string }> = [];
+    await startServer((req, res) => {
+      let body = ''; req.on('data', (chunk) => { body += chunk; });
+      req.on('end', () => {
+        requests.push({ method: req.method, url: req.url, body, auth: req.headers.authorization, contentType: req.headers['content-type'] });
+        if (req.method !== 'POST' || req.url !== '/api/v1/usage/dashboard/api-keys-usage') { res.writeHead(405).end(); return; }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ code: 0, data: { stats: { '13': { api_key_id: 13, today_actual_cost: 0, total_actual_cost: 0.39188871 }, '14': { api_key_id: 14, today_actual_cost: 0.053992605, total_actual_cost: 0.053992605 } } } }));
+      });
+    });
+    const keys = await adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'keys', day: '2026-11-27', timeZone: 'Asia/Shanghai', apiKeyIds: [13, 14] });
+    expect(requests).toEqual([{ method: 'POST', url: '/api/v1/usage/dashboard/api-keys-usage', auth: 'Bearer jwt', contentType: 'application/json', body: JSON.stringify({ api_key_ids: [13, 14] }) }]);
+    expect(keys).toEqual([{ upstreamId: 13, todayActualCost: 0, recentActualCost: 0.39188871 }, { upstreamId: 14, todayActualCost: 0.053992605, recentActualCost: 0.053992605 }]);
+    for (const ids of [undefined, [0], [13, 13], Array.from({ length: 101 }, (_, i) => i + 1)]) {
+      await expect(adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'keys', day: '2026-11-27', timeZone: 'Asia/Shanghai', apiKeyIds: ids })).rejects.toThrow();
+    }
+    expect(await adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'keys', day: '2026-11-27', timeZone: 'Asia/Shanghai', apiKeyIds: [] })).toEqual([]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it('returns one Key catalog page per call and retains IDs even if secrets are not exposed', async () => {
+    const urls: string[] = [];
+    await startServer((req, res) => {
+      urls.push(req.url!); const page = Number(new URL(req.url!, 'http://local').searchParams.get('page'));
+      const items = page === 1 ? Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `key-${i + 1}` })) : [{ id: 101, name: 'last', key: 'masked***', status: 'disabled' }];
+      res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ code: 0, data: { items, total: 101, page, page_size: 100 } }));
+    });
+    const first = await adapter.getUsageKeyCatalog(baseUrl, 'jwt', 1);
+    expect(first.items).toHaveLength(100); expect(first.nextPage).toBe(2);
+    expect(first.items[0]).toMatchObject({ upstreamId: 1, name: 'key-1', key: '' });
+    expect(urls).toHaveLength(1);
+    const last = await adapter.getUsageKeyCatalog(baseUrl, 'jwt', 2);
+    expect(last.items[0]).toMatchObject({ upstreamId: 101, enabled: false }); expect(last.nextPage).toBeNull();
+    expect(urls).toEqual(['/api/v1/keys?page=1&page_size=100', '/api/v1/keys?page=2&page_size=100']);
+  });
+
+  it('rejects incomplete Key batches and malformed catalogs instead of publishing a zero total', async () => {
+    await startServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ code: 0, data: req.method === 'POST' ? { stats: {} } : { unrelated: [] } }));
+    });
+    await expect(adapter.getUsageDashboard(baseUrl, 'jwt', { kind: 'keys', day: '2026-11-27', timeZone: 'Asia/Shanghai', apiKeyIds: [13] })).rejects.toThrow('完整');
+    await expect(adapter.getUsageKeyCatalog(baseUrl, 'jwt')).rejects.toThrow('分页格式');
+  });
+
   it('requests actual dashboard aggregates with explicit timezone and single-day model scope', async () => {
     const urls: URL[] = [];
     await startServer((req, res) => {

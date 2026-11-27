@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { db, schema } from '../db/index.js';
 import { upsertSetting } from '../db/upsertSetting.js';
-import type { UsageAccountState, UsageAccountView, UsageCollectionConfig, UsageCollectionPolicy, UsageDataset, UsageKeyCatalog, UsageOverview, UsageTaskKind } from '../shared/upstreamUsage.js';
+import type { UsageAccountState, UsageAccountView, UsageCollectedRecord, UsageCollectionConfig, UsageCollectionPolicy, UsageDataset, UsageKey, UsageKeyCatalog, UsageOverview, UsageTaskKind } from '../shared/upstreamUsage.js';
 import { getAdapter } from './platforms/index.js';
 import { UsageDashboardError } from './platforms/usageDashboard.js';
 import { getCredentialModeFromExtraConfig, getPlatformUserIdFromExtraConfig, getSub2ApiAuthFromExtraConfig, resolveProxyUrlFromExtraConfig } from './accountExtraConfig.js';
@@ -10,6 +10,7 @@ import { withAccountProxyOverride } from './siteProxy.js';
 import { refreshSub2ApiManagedSessionSingleflight } from './sub2apiRefreshSingleflight.js';
 import { getUsageCollectionConfig, listUsageCollectedRecords, readUsageAccountState, readUsageSetting, storeUsageAccountState, storeUsageCollectedRecord, storeUsageCollectionConfig } from './usageCollectionStore.js';
 import { nextUsageCollectionAt, shiftUsageDay, usageDay, usageTaskInterval, validateUsageConfig, validateUsageRange } from './usageCollectionPolicy.js';
+import { appendUsageCatalogPage, appendUsageKeyBatch, needsUsageKeyCatalog, usageKeyBatch } from './usageKeyCollection.js';
 
 type Account = typeof schema.accounts.$inferSelect;
 type Site = typeof schema.sites.$inferSelect;
@@ -154,7 +155,7 @@ async function queueSync(input: { siteId?: number; start?: string; end?: string;
 
 function recent(times: number[], now: number): number[] { return times.filter((time) => time > now - 3600_000); }
 
-async function collectOne(row: Candidate, state: UsageAccountState, origins: Record<string, OriginState>, kind: UsageTaskKind, day: string, history: boolean, timeZone: string) {
+async function collectOne(row: Candidate, state: UsageAccountState, origins: Record<string, OriginState>, kind: UsageTaskKind, day: string, history: boolean, timeZone: string, catalogRecord?: UsageCollectedRecord) {
   const now = Date.now();
   const origin = origins[row.origin]; const task = state.tasks[kind];
   state.requestTimes = recent(state.requestTimes, now); origin.requestTimes = recent(origin.requestTimes, now);
@@ -176,31 +177,40 @@ async function collectOne(row: Candidate, state: UsageAccountState, origins: Rec
       return;
     }
     const adapter = getAdapter(row.site.platform)!;
-    let data: UsageDataset;
+    let data: UsageDataset | null = null;
     await withAccountProxyOverride(resolveProxyUrlFromExtraConfig(row.account.extraConfig), async () => {
       if (kind === 'catalog') {
-        const catalog = await adapter.getUsageKeyCatalog!(row.site.url, row.account.accessToken);
+        const catalog = await adapter.getUsageKeyCatalog!(row.site.url, row.account.accessToken, state.catalogScan?.page || 1);
         const local = await db.select().from(schema.accountTokens).where(eq(schema.accountTokens.accountId, row.account.id)).all();
-        data = catalog.filter((key) => key.upstreamId).map((key): UsageKeyCatalog => ({
+        const items = catalog.items.map((key): UsageKeyCatalog => ({
           upstreamId: key.upstreamId!, name: key.name, group: key.tokenGroup || null,
           // Never link by name alone. Masked or ambiguous values stay unlinked.
-          localTokenId: local.filter((token: { token: string }) => token.token === key.key).length === 1
+          localTokenId: key.key && !key.key.includes('*') && local.filter((token: { token: string }) => token.token === key.key).length === 1
             ? local.find((token: { token: string }) => token.token === key.key)!.id : null,
         }));
+        data = appendUsageCatalogPage(state, items, catalog.nextPage);
+      } else if (kind === 'keys') {
+        const ids = usageKeyBatch(state, catalogRecord, day, timeZone);
+        const items = ids.length ? await adapter.getUsageDashboard!(row.site.url, row.account.accessToken, { kind, day, timeZone, apiKeyIds: ids }) as UsageKey[] : [];
+        data = appendUsageKeyBatch(state, ids, items);
       } else {
         data = await adapter.getUsageDashboard!(row.site.url, row.account.accessToken, { kind, day, timeZone });
       }
     });
+    if (data === null) { task.nextAt = Date.now(); return; }
     const fetchedAt = new Date().toISOString();
     if ((kind === 'stats' || kind === 'keys') && usageDay(new Date(fetchedAt), timeZone) !== day) {
       throw new Error('采集跨越统计日期边界，等待下一轮重新获取');
     }
     await storeUsageCollectedRecord({ accountId: row.account.id, kind, day, timeZone, fetchedAt, data: data! });
     task.lastSuccessAt = fetchedAt; task.failures = 0; delete task.error;
+    if (kind === 'catalog') state.catalogCompleteAt = fetchedAt;
     delete state.authRefreshAttempted;
     if (!history) task.nextAt = nextUsageCollectionAt(Date.now(), usageTaskInterval(kind, row.policy), row.policy.jitterPercent);
     else state.pendingDays = state.pendingDays.filter((pending) => pending !== day);
   } catch (error) {
+    if (kind === 'catalog') delete state.catalogScan;
+    if (kind === 'keys') { delete state.keyScan; delete state.catalogCompleteAt; }
     if (state.authRefreshPending) {
       state.blocked = '登录凭证刷新失败，请更新凭证后恢复采集';
       state.authRefreshPending = false;
@@ -208,7 +218,7 @@ async function collectOne(row: Candidate, state: UsageAccountState, origins: Rec
     task.failures++;
     task.error = error instanceof UsageDashboardError ? error.message : '消费采集失败，请检查上游连接、凭证或响应格式';
     const status = error instanceof UsageDashboardError ? error.status : /HTTP (401|403|404|429)/.exec(String(error))?.[1];
-    if (Number(status) === 404 || Number(status) === 405) { task.paused = true; task.error = '上游不支持此汇总接口，可在修复后恢复采集'; }
+    if (Number(status) === 404 || Number(status) === 405) { task.paused = true; task.error = `上游接口返回 HTTP ${status}，当前采集已暂停，请核对接口路径、请求方法及上游版本`; }
     else if (Number(status) === 403) { origin.blocked = '上游拒绝访问，采集已暂停'; state.blocked = origin.blocked; }
     else if (Number(status) === 401) {
       // Queue the managed singleflight as a separate spaced request.
@@ -250,8 +260,12 @@ async function runPass(): Promise<void> {
     if (state.blocked || origin.blocked || state.cooldownUntil > now || origin.cooldownUntil > now || origin.nextAt > now) continue;
     if (recent(state.requestTimes, now).length >= row.policy.accountHourlyBudget || recent(origin.requestTimes, now).length >= row.policy.originHourlyBudget) continue;
     if (state.historyDay !== today) { state.historyDay = today; state.historyRequests = 0; }
-    let kind = kinds.filter((key) => !state.tasks[key].paused && state.tasks[key].nextAt <= now)
+    if (state.keyScan && (state.keyScan.day !== today || state.keyScan.timeZone !== timeZone)) delete state.keyScan;
+    const catalog = records.filter((r) => r.accountId === row.account.id && r.kind === 'catalog' && r.timeZone === timeZone).sort((a, b) => b.fetchedAt.localeCompare(a.fetchedAt))[0];
+    let kind = kinds.filter((key) => !state.tasks[key].paused && state.tasks[key].nextAt <= now
+      && !(key === 'keys' && state.tasks.catalog.paused) && !(key === 'catalog' && state.keyScan))
       .sort((a, b) => state.tasks[a].nextAt - state.tasks[b].nextAt)[0];
+    if (kind === 'keys' && needsUsageKeyCatalog(state, catalog)) kind = 'catalog';
     let day = today; let history = false;
     if (!kind && !state.tasks.models.paused && state.historyRequests < row.policy.historyDailyBudget) {
       const accountRecords = records.filter((r) => r.accountId === row.account.id && r.kind === 'models' && r.timeZone === timeZone);
@@ -266,7 +280,7 @@ async function runPass(): Promise<void> {
     }
     if (!kind) continue;
     claimed.add(row.origin);
-    jobs.push(() => collectOne(row, state, origins, kind, day, history, timeZone));
+    jobs.push(() => collectOne(row, state, origins, kind, day, history, timeZone, catalog));
     if (jobs.length >= config.defaults.concurrency) break;
   }
   // Reservations for each origin have separate account states, but the shared

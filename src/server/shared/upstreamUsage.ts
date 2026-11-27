@@ -63,6 +63,9 @@ export type UsageAccountState = {
   pendingDays: string[];
   authRefreshPending?: boolean;
   authRefreshAttempted?: boolean;
+  catalogCompleteAt?: string;
+  catalogScan?: { page: number; items: UsageKeyCatalog[] };
+  keyScan?: { day: string; timeZone: string; ids: number[]; cursor: number; items: UsageKey[] };
 };
 export type UsageCollectedRecord = {
   accountId: number;

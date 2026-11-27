@@ -143,10 +143,10 @@ export type DeleteApiTokenResult =
   | 'unconfirmed';
 
 export interface PlatformAdapter {
-  getUsageKeyCatalog?(baseUrl: string, accessToken: string): Promise<ApiTokenInfo[]>;
+  getUsageKeyCatalog?(baseUrl: string, accessToken: string, page?: number): Promise<{ items: ApiTokenInfo[]; nextPage: number | null }>;
   /** Optional, explicitly implemented management capability. One call = one HTTP request. */
   getUsageDashboard?(baseUrl: string, accessToken: string, input: {
-    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string;
+    kind: 'stats' | 'keys' | 'models'; timeZone: string; day: string; apiKeyIds?: number[];
   }): Promise<import('../../shared/upstreamUsage.js').UsageDataset>;
   readonly platformName: string;
   detect(url: string): Promise<boolean>;
