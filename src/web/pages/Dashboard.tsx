@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useState, useCallback } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { api } from '../api.js';
 import { useToast } from '../components/Toast.js';
 import { copyText } from '../clipboard.js';
@@ -10,8 +10,12 @@ import { availabilityColor, availabilityRgb, availabilityColorDataUri } from '..
 import { PillTabBg } from '../components/PillTabBg.js';
 import { ErrorBoundary } from '../components/ErrorBoundary.js';
 import ChartLoadingState from '../components/charts/ChartLoadingState.js';
+import PaginationControls from '../components/PaginationControls.js';
+import { useClientPagination } from '../components/useClientPagination.js';
+import { useIsMobile } from '../components/useIsMobile.js';
 import { tr } from '../i18n.js';
-const ConsumptionPanel = lazy(() => import('./consumption/ConsumptionPanel.js'));
+import './dashboard/dashboard.css';
+import OverviewInsights from './dashboard/OverviewInsights.js';
 
 const SiteDistributionChart = lazy(
   () => import('../components/charts/SiteDistributionChart.js'),
@@ -279,8 +283,13 @@ export default function Dashboard({
   const [siteDistribution, setSiteDistribution] = useState<any[]>([]);
   const [siteLoading, setSiteLoading] = useState(true);
   const [sites, setSites] = useState<any[]>([]);
+  const [params] = useSearchParams();
+  // `?tab=health` remains a compatible deep link, but observability now lives
+  // on the main overview instead of occupying a separate dashboard tab.
+  const dashboardTab = params.get('tab') === 'access' ? 'access' : 'overview';
+  const mobile = useIsMobile();
   const [observabilityTab, setObservabilityTab] = useState<'sites' | 'models'>('sites');
-  const [siteChartTab, setSiteChartTab] = useState<'distribution' | 'trend'>('distribution');
+  const [siteChartTab, setSiteChartTab] = useState<'distribution' | 'trend' | 'availability'>('availability');
   // Both chart views stay mounted as stacked layers; switching tabs only
   // toggles visibility so a chart never re-mounts, re-fetches or flashes.
   const [siteTrendMounted, setSiteTrendMounted] = useState(false);
@@ -296,11 +305,13 @@ export default function Dashboard({
   const activeSites = useMemo(() => rawSiteAvailability
     .filter((site) => site.totalRequests > 0)
     .sort((a, b) => (b.totalRequests || 0) - (a.totalRequests || 0)), [rawSiteAvailability]);
-  const siteAvailability = activeSites;
+  const sitePages = useClientPagination(activeSites, 'sites', mobile ? 4 : 6);
+  const siteAvailability = sitePages.pagedItems;
   const activeModels = useMemo(() => rawModelAvailability
     .filter((model) => model.totalRequests > 0)
     .sort((a, b) => (b.totalRequests || 0) - (a.totalRequests || 0)), [rawModelAvailability]);
-  const modelAvailability = activeModels;
+  const modelPages = useClientPagination(activeModels, 'models', mobile ? 4 : 6);
+  const modelAvailability = modelPages.pagedItems;
   const normalizedAdminName = (adminName || '').trim() || '\u7ba1\u7406\u5458';
 
   const load = useCallback(
@@ -376,6 +387,7 @@ export default function Dashboard({
   // Preload the other site chart chunk, then pre-mount the hidden trend layer
   // so its fetch + first render finish before the user switches tabs.
   useEffect(() => {
+    if (dashboardTab !== 'overview') return;
     let cancelled = false;
     void warmSiteChartChunks().then(() => {
       if (!cancelled) setSiteTrendMounted(true);
@@ -383,7 +395,7 @@ export default function Dashboard({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [dashboardTab]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -677,13 +689,13 @@ export default function Dashboard({
   };
 
   return (
-    <div className="animate-fade-in">
+    <div className="animate-fade-in dashboard-page">
       <div
         style={{
           display: 'flex',
           justifyContent: 'space-between',
           alignItems: 'center',
-          marginBottom: 24,
+          marginBottom: 16,
         }}
       >
         <h2 className="greeting">
@@ -727,9 +739,20 @@ export default function Dashboard({
         </div>
       </div>
 
-      
+      <nav className="dashboard-navigation" aria-label="仪表盘视图">
+        <div className="dashboard-view-links">
+          {([
+            ['overview', '运行总览'], ['access', '服务接入'],
+          ] as const).map(([key, label]) => (
+            <Link key={key} to={key === 'overview' ? '/' : `/?tab=${key}`} aria-current={dashboardTab === key ? 'page' : undefined}>
+              {tr(label)}
+            </Link>
+          ))}
+        </div>
+        <Link className="dashboard-consumption-link" to="/consumption">消费分析 ↗</Link>
+      </nav>
 
-      <Suspense fallback={<ChartFallback height={240} />}><ConsumptionPanel compact /></Suspense>
+      {dashboardTab === 'overview' && <section aria-label="运行总览">
       <div className="dashboard-stat-grid">
         <div className="stat-card animate-slide-up stagger-1">
           <div className="stat-card-header">
@@ -921,6 +944,16 @@ export default function Dashboard({
         </div>
       </div>
 
+      <OverviewInsights trend={data?.dailyTrend || []} coverage={data?.actualCostCoverage} requests={data?.proxy24h} />
+
+      <div className="dashboard-overview-footer">
+        <div>
+          <strong>费用来自上游实际统计 · USD</strong>
+          <span>{data?.actualCostCoverage ? `今日已同步 ${data.actualCostCoverage.covered} / ${data.actualCostCoverage.expected} 个账号` : '未同步的费用显示为待同步'} · 调用与性能按本系统请求统计</span>
+        </div>
+        <Link to="/consumption">按站点、账号、模型、Key 查看费用 →</Link>
+      </div>
+
       {!loading && !siteLoading && (sites.length === 0 || totalAccounts === 0) && (
         <div
           className="card"
@@ -957,6 +990,8 @@ export default function Dashboard({
           </ol>
         </div>
       )}
+      </section>}
+      {dashboardTab === 'access' && <section aria-label="服务接入">
       <div className="card dashboard-endpoint-card" style={{ padding: 16, marginBottom: 16, border: '1px solid var(--color-border)' }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--color-text-primary)', marginBottom: 4 }}>{tr('服务地址')}</div>
         <div style={{ fontSize: 12, color: 'var(--color-text-secondary)', lineHeight: 1.5, marginBottom: 12 }}>{tr('在 Cursor、Codex、Claude Code 或 OpenAI SDK 中配置 Base URL 时使用')}</div>
@@ -1066,8 +1101,10 @@ export default function Dashboard({
           ) : null}
         </div>
       </div>
+      <div className="dashboard-access-links"><Link to="/downstream-keys">下游密钥 →</Link><Link to="/routes">模型路由 →</Link></div>
+      </section>}
 
-            <div className="chart-container animate-slide-up stagger-8 site-observability-panel">
+      {dashboardTab === 'overview' && <section aria-label="站点与模型分析" className="chart-container site-observability-panel dashboard-overview-observability">
         <div className="site-observability-header">
           <div>
             <div className="site-observability-title">
@@ -1094,8 +1131,8 @@ export default function Dashboard({
             </div>
             <div className="site-observability-subtitle">
               {observabilityTab === 'sites'
-                ? tr('站点分布与今日消耗 · 最近 24 小时可用性')
-                : tr('模型消耗与调用分布 · 最近 24 小时可用性')}
+                ? tr('切换查看可用性、站点分布与趋势')
+                : tr('最近 24 小时的请求可用性与响应速度')}
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
@@ -1123,10 +1160,9 @@ export default function Dashboard({
         {observabilityTab === 'sites' ? (
           <>
           <div
-            className="chart-container"
+            className="dashboard-analysis-body"
             style={{
-              padding: 16,
-              marginBottom: 20,
+              marginBottom: siteChartTab === 'availability' ? 0 : 16,
             }}
           >
             <div
@@ -1140,11 +1176,15 @@ export default function Dashboard({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, fontWeight: 600, color: 'var(--color-text-primary)' }}>
-                {siteChartTab === 'distribution'
+                {siteChartTab === 'availability' ? tr('24 小时可用性') : siteChartTab === 'distribution'
                   ? tr('站点排行榜')
                   : tr('站点趋势')}
               </div>
               <div className="pill-tabs">
+                <button type="button" className={`pill-tab ${siteChartTab === 'availability' ? 'active' : ''}`} onClick={() => setSiteChartTab('availability')}>
+                  {siteChartTab === 'availability' && <PillTabBg />}
+                  {tr('可用性')}
+                </button>
                 <button
                   type="button"
                   className={`pill-tab ${siteChartTab === 'distribution' ? 'active' : ''}`}
@@ -1166,7 +1206,7 @@ export default function Dashboard({
                 </button>
               </div>
             </div>
-            <div className="chart-panel-enter animate-slide-up stagger-6 site-chart-panel">
+            {siteChartTab !== 'availability' && <div className="chart-panel-enter site-chart-panel">
               <div
                 className="site-chart-layer"
                 style={{ visibility: siteChartTab === 'distribution' ? 'visible' : 'hidden' }}
@@ -1195,15 +1235,9 @@ export default function Dashboard({
                   </ErrorBoundary>
                 </div>
               )}
-            </div>
+            </div>}
           </div>
-          <div
-            className="chart-container"
-            style={{
-              marginTop: 0,
-              padding: 16,
-            }}
-          >
+          {siteChartTab === 'availability' && <div>
             <div
               style={{
                 display: 'flex',
@@ -1366,29 +1400,14 @@ export default function Dashboard({
             <div className="site-observability-empty-note">{tr('有代理请求后，这里会自动生成每个站点的可用性条和平均响应速度。')}</div>
           </div>
         )}
-          </div>
+          <PaginationControls page={sitePages.page} totalPages={sitePages.totalPages} onPageChange={sitePages.setPage} visible={sitePages.showControls} pageSize={sitePages.pageSize} totalItems={activeSites.length} />
+          </div>}
           </>
         ) : (
           <>
+          <div className="dashboard-model-link"><Link to="/consumption?view=models">查看上游模型实际消费分析 →</Link></div>
           <div
-            className="chart-container"
-            style={{ marginBottom: 20, padding: 16 }}
-          >
-            {insightsLoading && !insightsData ? (
-              <ChartFallback height={300} />
-            ) : (
-              <ErrorBoundary compact>
-                <Suspense fallback={<ChartFallback height={300} />}>
-                  <Link to="/consumption?view=models">查看上游模型实际消费分析 →</Link>
-                </Suspense>
-              </ErrorBoundary>
-            )}
-          </div>
-          <div
-            className="chart-container"
-            style={{
-              padding: 16,
-            }}
+            className="dashboard-analysis-body"
           >
             <div
               style={{
@@ -1547,10 +1566,11 @@ export default function Dashboard({
             <div className="site-observability-empty-note">{tr('有代理请求后，这里会按使用模型生成最近 24 小时的可用性条。')}</div>
           </div>
           )}
+          <PaginationControls page={modelPages.page} totalPages={modelPages.totalPages} onPageChange={modelPages.setPage} visible={modelPages.showControls} pageSize={modelPages.pageSize} totalItems={activeModels.length} />
           </div>
           </>
         )}
-      </div>
+      </section>}
     </div>
   );
 }

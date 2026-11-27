@@ -15,6 +15,7 @@ const { apiMock } = vi.hoisted(() => ({
     getSiteDistribution: vi.fn(),
     getSiteTrend: vi.fn(),
     getSites: vi.fn(),
+    getTunnelStatus: vi.fn().mockResolvedValue({ tunnel: { enabled: false } }),
   },
 }));
 
@@ -107,13 +108,62 @@ describe('Dashboard site observability panel', () => {
     vi.clearAllMocks();
   });
 
+  it('keeps the overview focused and navigates to details without stacking every panel', async () => {
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => {
+        root = create(<MemoryRouter><ToastProvider><Dashboard /></ToastProvider></MemoryRouter>);
+      });
+      await flushMicrotasks();
+      expect(root.root.findAllByProps({ 'aria-label': '运行总览' })).toHaveLength(1);
+      expect(root.root.findAllByProps({ 'aria-label': '服务接入' })).toHaveLength(0);
+      expect(root.root.findAllByProps({ 'aria-label': '消费分析维度' })).toHaveLength(0);
+      expect(root.root.findAllByProps({ 'aria-label': '站点与模型分析' })).toHaveLength(1);
+      const visit = async (href: string) => {
+        const link = root.root.findAllByType('a').find((node) => node.props.href === href)!;
+        await act(async () => link.props.onClick({ button: 0, defaultPrevented: false, preventDefault: vi.fn(), metaKey: false, altKey: false, ctrlKey: false, shiftKey: false }));
+        await flushMicrotasks();
+      };
+      expect(root.root.findAllByType('a').some((node) => node.props.href === '/?tab=health')).toBe(false);
+      expect(root.root.findAllByProps({ 'aria-label': '站点与模型分析' })).toHaveLength(1);
+      await visit('/?tab=access');
+      expect(root.root.findAllByProps({ 'aria-label': '站点与模型分析' })).toHaveLength(0);
+      expect(collectText(root.root)).toContain('服务地址');
+      await visit('/');
+      expect(root.root.findAllByProps({ 'aria-label': '运行总览' })).toHaveLength(1);
+      expect(root.root.findAllByProps({ 'aria-label': '服务接入' })).toHaveLength(0);
+    } finally { root?.unmount(); }
+  });
+
+  it.each([{ width: 1280, size: 6 }, { width: 390, size: 4 }])('paginates availability cards at viewport width $width', async ({ width, size }) => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+    const snapshot = await apiMock.getDashboard();
+    apiMock.getDashboard.mockResolvedValue({ ...snapshot, siteAvailability: Array.from({ length: 14 }, (_, index) => ({ ...snapshot.siteAvailability[0], siteId: index + 1, siteName: `站点-${index + 1}` })) });
+    let root!: WebTestRenderer;
+    try {
+      await act(async () => { root = create(<MemoryRouter initialEntries={['/?tab=health']}><ToastProvider><Dashboard /></ToastProvider></MemoryRouter>); });
+      await flushMicrotasks();
+      const cards = () => root.root.findAll((node) => node.type === 'div' && /^site-observability-card(?:\s|$)/.test(node.props.className || ''));
+      expect(cards()).toHaveLength(size);
+      expect(collectText(cards()[0])).toContain('站点-1');
+      const next = root.root.findAllByType('button').find((node) => collectText(node) === '下一页')!;
+      await act(async () => next.props.onClick());
+      expect(cards()).toHaveLength(size);
+      expect(collectText(cards()[0])).toContain(`站点-${size + 1}`);
+    } finally {
+      root?.unmount();
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+    }
+  });
+
   it('renders site availability strips and summary metrics', async () => {
     let root!: WebTestRenderer;
 
     try {
       await act(async () => {
         root = create(
-          <MemoryRouter initialEntries={['/']}>
+          <MemoryRouter initialEntries={['/?tab=health']}>
             <ToastProvider>
               <Dashboard />
             </ToastProvider>
@@ -162,7 +212,7 @@ describe('Dashboard site observability panel', () => {
     try {
       await act(async () => {
         root = create(
-          <MemoryRouter initialEntries={['/']}>
+          <MemoryRouter initialEntries={['/?tab=health']}>
             <ToastProvider>
               <Dashboard />
             </ToastProvider>
