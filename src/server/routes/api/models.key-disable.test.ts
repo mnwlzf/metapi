@@ -125,6 +125,49 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     const model = plan.models.find((item) => item.modelName === 'gpt-4o');
     expect(model?.keyResults.map((key) => key.keyId)).toEqual([b.id]);
     expect(model?.keyResults[0]?.routeState).toBe('probe-disabled');
+    expect(model?.tab).toBe('probeable');
+    expect(model?.manualExcludedKeys.map((key) => key.keyId)).toEqual([a.id]);
+    expect(model?.policyExcludedKeys).toEqual([]);
+  });
+
+  it('moves a model to the manual-disabled tab only when every key is manually disabled', async () => {
+    const { account, a, b } = await seed();
+    await ban(account.id, a.id);
+    await ban(account.id, b.id);
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const plan = await getModelProbePlan();
+    const model = plan.models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.tab).toBe('manual-disabled');
+    expect(model?.keyResults).toEqual([]);
+    expect(model?.manualExcludedKeys.map((key) => key.keyId).sort()).toEqual([a.id, b.id].sort());
+
+    await ban(account.id, b.id, false);
+    const restored = (await getModelProbePlan()).models.find((item) => item.modelName === 'gpt-4o');
+    expect(restored?.tab).toBe('probeable');
+    expect(restored?.keyResults.map((key) => key.keyId)).toEqual([b.id]);
+  });
+
+  it('separates policy-disabled models while automatic probe bans remain probeable', async () => {
+    const { site, account, a, b } = await seed();
+    await db.insert(schema.siteDisabledModels).values([
+      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o', source: 'policy' },
+      { siteId: site.id, accountId: account.id, tokenId: b.id, modelName: 'gpt-4o', source: 'probe' },
+    ]).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const plan = await getModelProbePlan();
+    const model = plan.models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.tab).toBe('probeable');
+    expect(model?.keyResults.map((key) => key.keyId)).toEqual([b.id]);
+    expect(model?.policyExcludedKeys.map((key) => key.keyId)).toEqual([a.id]);
+
+    await db.update(schema.siteDisabledModels).set({ source: 'policy' })
+      .where(eq(schema.siteDisabledModels.tokenId, b.id)).run();
+    const excluded = (await getModelProbePlan()).models.find((item) => item.modelName === 'gpt-4o');
+    expect(excluded?.tab).toBe('policy-disabled');
+    expect(excluded?.keyResults).toEqual([]);
+    expect(excluded?.policyExcludedKeys).toHaveLength(2);
   });
 
   it('preserves probe provenance on save and converts only explicit bans to manual', async () => {

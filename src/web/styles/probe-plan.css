@@ -82,6 +82,63 @@
   margin-bottom: 10px;
 }
 
+.probe-plan-status-tabs {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.probe-plan-status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.probe-plan-status-tab:hover,
+.probe-plan-status-tab.is-active { color: var(--color-primary); }
+.probe-plan-status-tab.is-active { border-bottom-color: var(--color-primary); font-weight: 600; }
+
+.probe-plan-status-count {
+  min-width: 22px;
+  padding: 2px 6px;
+  border-radius: 10px;
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.probe-plan-status-tab.is-active .probe-plan-status-count {
+  background: var(--color-selection-bg);
+  color: var(--color-primary);
+}
+
+.probe-plan-status-note {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning-soft) 42%, var(--color-bg));
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.probe-plan-status-note.is-policy-disabled {
+  border-left-color: var(--color-info);
+  background: color-mix(in srgb, var(--color-info-soft) 42%, var(--color-bg));
+}
+
 .probe-plan-type-tabs {
   display: flex;
   gap: 4px;
@@ -358,6 +415,26 @@
 
 .probe-plan-key-list {
   border-top: 1px solid var(--color-border-light);
+}
+
+.probe-plan-key-section + .probe-plan-key-section { margin-top: 14px; }
+
+.probe-plan-key-section h3 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 8px 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.probe-plan-key-section h3 span {
+  color: var(--color-text-muted);
+  font-size: 10px;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
 }
 
 .probe-plan-key-row {
@@ -710,6 +787,14 @@
     margin-right: -12px;
     padding-right: 12px;
   }
+
+  .probe-plan-status-tabs {
+    margin-right: -12px;
+    padding-right: 12px;
+    overflow-x: auto;
+  }
+
+  .probe-plan-status-tab { min-height: 38px; padding: 0 9px; font-size: 12px; }
 
   .probe-plan-tab {
     min-height: 36px;

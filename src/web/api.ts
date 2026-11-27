@@ -995,6 +995,7 @@ export const api = {
     models: Array<{
       modelName: string;
       type: 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
+      tab: 'probeable' | 'manual-disabled' | 'policy-disabled';
       recentCalls: number;
       intervalHours: number;
       automaticIntervalHours: number;
@@ -1013,6 +1014,56 @@ export const api = {
         availabilityLatencyMs: number | null;
         availabilityCheckedAt: string | null;
         routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
+        recentCalls: number;
+        lastProbe: {
+          status: string;
+          latencyMs: number | null;
+          tokensUsed: number | null;
+          estimatedCost: number | null;
+          errorMessage: string | null;
+          questionCategory: string;
+          createdAt: string | null;
+        } | null;
+      }>;
+      manualExcludedKeys: Array<{
+        keyId: number | null;
+        keyName: string;
+        keyGroup: string | null;
+        accountId: number;
+        accountName: string | null;
+        siteId: number;
+        siteName: string;
+        platform: string;
+        available: boolean | null;
+        connectivity: boolean | null;
+        availabilityLatencyMs: number | null;
+        availabilityCheckedAt: string | null;
+        routeState: 'manual-disabled';
+        recentCalls: number;
+        lastProbe: {
+          status: string;
+          latencyMs: number | null;
+          tokensUsed: number | null;
+          estimatedCost: number | null;
+          errorMessage: string | null;
+          questionCategory: string;
+          createdAt: string | null;
+        } | null;
+      }>;
+      policyExcludedKeys: Array<{
+        keyId: number | null;
+        keyName: string;
+        keyGroup: string | null;
+        accountId: number;
+        accountName: string | null;
+        siteId: number;
+        siteName: string;
+        platform: string;
+        available: boolean | null;
+        connectivity: boolean | null;
+        availabilityLatencyMs: number | null;
+        availabilityCheckedAt: string | null;
+        routeState: 'policy-disabled';
         recentCalls: number;
         lastProbe: {
           status: string;

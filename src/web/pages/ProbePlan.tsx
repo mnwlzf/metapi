@@ -8,39 +8,44 @@ import ListPage from '../components/ListPage.js';
 import { tr } from '../i18n.js';
 
 type ProbeModelType = 'text' | 'image' | 'embedding' | 'rerank' | 'audio' | 'video' | 'other';
+type ProbePlanKeyResult = {
+  keyId: number | null;
+  keyName: string;
+  keyGroup: string | null;
+  accountId: number;
+  accountName: string | null;
+  siteId: number;
+  siteName: string;
+  platform: string;
+  available: boolean | null;
+  connectivity: boolean | null;
+  availabilityLatencyMs: number | null;
+  availabilityCheckedAt: string | null;
+  routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
+  recentCalls: number;
+  lastProbe: {
+    status: string;
+    latencyMs: number | null;
+    tokensUsed: number | null;
+    estimatedCost: number | null;
+    errorMessage: string | null;
+    questionCategory: string;
+    createdAt: string | null;
+  } | null;
+};
 type ProbePlanModel = {
   modelName: string;
   type: ProbeModelType;
+  tab: 'probeable' | 'manual-disabled' | 'policy-disabled';
   recentCalls: number;
   intervalHours: number;
   automaticIntervalHours: number;
   overridden: boolean;
-  keyResults: Array<{
-    keyId: number | null;
-    keyName: string;
-    keyGroup: string | null;
-    accountId: number;
-    accountName: string | null;
-    siteId: number;
-    siteName: string;
-    platform: string;
-    available: boolean | null;
-    connectivity: boolean | null;
-    availabilityLatencyMs: number | null;
-    availabilityCheckedAt: string | null;
-    routeState: 'manual-disabled' | 'policy-disabled' | 'probe-disabled' | 'available' | 'unavailable' | 'unknown';
-    recentCalls: number;
-    lastProbe: {
-      status: string;
-      latencyMs: number | null;
-      tokensUsed: number | null;
-      estimatedCost: number | null;
-      errorMessage: string | null;
-      questionCategory: string;
-      createdAt: string | null;
-    } | null;
-  }>;
+  keyResults: ProbePlanKeyResult[];
+  manualExcludedKeys: ProbePlanKeyResult[];
+  policyExcludedKeys: ProbePlanKeyResult[];
 };
+type ProbePlanTab = ProbePlanModel['tab'];
 
 const TYPE_LABELS: Record<ProbeModelType, string> = {
   text: tr('文本'), image: tr('图片'), embedding: tr('向量'), rerank: tr('重排'),
@@ -53,6 +58,7 @@ export default function ProbePlan() {
   const isMobile = useIsMobile();
   const [search, setSearch] = useState('');
   const [typeFilter, setTypeFilter] = useState<ProbeModelType | 'all'>('all');
+  const [planTab, setPlanTab] = useState<ProbePlanTab>('probeable');
   const [overrideFilter, setOverrideFilter] = useState<'all' | 'automatic' | 'custom'>('all');
   const [savingModel, setSavingModel] = useState('');
   const [probingModel, setProbingModel] = useState('');
@@ -63,21 +69,26 @@ export default function ProbePlan() {
     staleTime: 30_000,
   });
   const models = planQuery.data?.models ?? [];
-  const typeCounts = useMemo(() => models.reduce((counts, model) => {
+  const tabCounts = useMemo(() => models.reduce((counts, model) => {
+    counts[model.tab] = (counts[model.tab] || 0) + 1;
+    return counts;
+  }, { probeable: 0, 'manual-disabled': 0, 'policy-disabled': 0 }), [models]);
+  const tabModels = useMemo(() => models.filter((model) => model.tab === planTab), [models, planTab]);
+  const typeCounts = useMemo(() => tabModels.reduce((counts, model) => {
     counts[model.type] = (counts[model.type] || 0) + 1;
     return counts;
-  }, {} as Partial<Record<ProbeModelType, number>>), [models]);
-  const customCount = models.filter((model) => model.overridden).length;
+  }, {} as Partial<Record<ProbeModelType, number>>), [tabModels]);
+  const customCount = models.filter((model) => model.tab === 'probeable' && model.overridden).length;
   const filteredModels = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return models.filter((model) => {
+    return tabModels.filter((model) => {
       if (query && !model.modelName.toLowerCase().includes(query)) return false;
       if (typeFilter !== 'all' && model.type !== typeFilter) return false;
-      if (overrideFilter === 'automatic' && model.overridden) return false;
-      if (overrideFilter === 'custom' && !model.overridden) return false;
+      if (planTab === 'probeable' && overrideFilter === 'automatic' && model.overridden) return false;
+      if (planTab === 'probeable' && overrideFilter === 'custom' && !model.overridden) return false;
       return true;
     });
-  }, [models, overrideFilter, search, typeFilter]);
+  }, [overrideFilter, planTab, search, tabModels, typeFilter]);
 
   async function updateInterval(modelName: string, intervalHours: number | null) {
     setSavingModel(modelName);
@@ -156,7 +167,7 @@ export default function ProbePlan() {
       <select
         className="probe-plan-frequency"
         value={model.overridden ? String(model.intervalHours) : 'auto'}
-        disabled={savingModel === model.modelName}
+        disabled={savingModel === model.modelName || model.keyResults.length === 0}
         aria-label={`${model.modelName} ${tr('探测频率')}`}
         onChange={(event) => void updateInterval(model.modelName, event.target.value === 'auto' ? null : Number(event.target.value))}
       >
@@ -192,7 +203,7 @@ export default function ProbePlan() {
         <>
           <div className="probe-plan-summary" aria-label={tr('模型探测概览')}>
             <SummaryMetric label={tr('模型总数')} value={models.length} />
-            <SummaryMetric label={tr('自动调度')} value={models.length - customCount} />
+            <SummaryMetric label={tr('自动调度')} value={tabCounts.probeable - customCount} />
             <SummaryMetric label={tr('手动覆盖')} value={customCount} accent={customCount > 0} />
             <SummaryMetric label={tr('图片模型')} value={typeCounts.image || 0} />
             <SummaryMetric label={tr('向量与重排')} value={(typeCounts.embedding || 0) + (typeCounts.rerank || 0)} />
@@ -204,8 +215,20 @@ export default function ProbePlan() {
           </div>
 
           <div className="probe-plan-controls">
+            <div className="probe-plan-status-tabs" role="tablist" aria-label={tr('按模型状态筛选')}>
+              <StatusTab active={planTab === 'probeable'} onClick={() => setPlanTab('probeable')} label={tr('探测计划')} count={tabCounts.probeable} />
+              <StatusTab active={planTab === 'manual-disabled'} onClick={() => setPlanTab('manual-disabled')} label={tr('手动禁用')} count={tabCounts['manual-disabled']} />
+              <StatusTab active={planTab === 'policy-disabled'} onClick={() => setPlanTab('policy-disabled')} label={tr('策略禁用')} count={tabCounts['policy-disabled']} />
+            </div>
+            {planTab !== 'probeable' && (
+              <div className={`probe-plan-status-note is-${planTab}`}>
+                {planTab === 'manual-disabled'
+                  ? tr('这些模型的所有 Key 都已手动禁用，因此不会参与探测或路由。')
+                  : tr('这些模型当前没有可探测的 Key，包含策略排除，也可能包含手动禁用。')}
+              </div>
+            )}
             <div className="probe-plan-type-tabs" role="group" aria-label={tr('按模型类型筛选')}>
-              <FilterTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label={tr('全部')} count={models.length} />
+              <FilterTab active={typeFilter === 'all'} onClick={() => setTypeFilter('all')} label={tr('全部')} count={tabModels.length} />
               {TYPE_ORDER.filter((type) => (typeCounts[type] || 0) > 0).map((type) => (
                 <FilterTab key={type} active={typeFilter === type} onClick={() => setTypeFilter(type)} label={TYPE_LABELS[type]} count={typeCounts[type] || 0} />
               ))}
@@ -215,15 +238,15 @@ export default function ProbePlan() {
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="10.8" cy="10.8" r="6.3" /><path strokeLinecap="round" d="m16 16 4.2 4.2" /></svg>
                 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={tr('搜索模型名称')} aria-label={tr('搜索模型名称')} />
               </label>
-              <label className="probe-plan-override-filter">
+              {planTab === 'probeable' && <label className="probe-plan-override-filter">
                 <span>{tr('频率设置')}</span>
                 <select value={overrideFilter} onChange={(event) => setOverrideFilter(event.target.value as typeof overrideFilter)} aria-label={tr('按频率设置筛选')}>
                   <option value="all">{tr('全部模型')}</option>
                   <option value="automatic">{tr('自动调度')}</option>
                   <option value="custom">{tr('手动覆盖')}</option>
                 </select>
-              </label>
-              <div className="probe-plan-result-count">{tr('显示')} <strong>{filteredModels.length}</strong> / {models.length}</div>
+              </label>}
+              <div className="probe-plan-result-count">{tr('显示')} <strong>{filteredModels.length}</strong> / {tabModels.length}</div>
             </div>
           </div>
         </>
@@ -245,13 +268,15 @@ export default function ProbePlan() {
               headerActions={<TypeBadge type={model.type} />}
               footerActions={(
                 <div className="probe-plan-mobile-actions">
-                  <div className="probe-plan-mobile-frequency"><span>{tr('探测频率')}</span>{renderIntervalControl(model)}</div>
-                  {renderProbeButton(model)}
+                  {planTab === 'probeable' ? <>
+                    <div className="probe-plan-mobile-frequency"><span>{tr('探测频率')}</span>{renderIntervalControl(model)}</div>
+                    {renderProbeButton(model)}
+                  </> : <StateBadge state={planTab} />}
                 </div>
               )}
             >
               <MobileField label={tr('近 7 天请求')} value={model.recentCalls.toLocaleString()} />
-              <MobileField label={tr('自动建议')} value={formatInterval(model.automaticIntervalHours)} />
+              {planTab === 'probeable' && <MobileField label={tr('自动建议')} value={formatInterval(model.automaticIntervalHours)} />}
               {expandedModel === model.modelName && <KeyDetails model={model} />}
             </MobileCard>
           ))}
@@ -265,10 +290,13 @@ export default function ProbePlan() {
                 <th>{tr('模型')}</th>
                 <th>{tr('分类')}</th>
                 <th className="is-numeric">{tr('近 7 天请求')}</th>
-                <th>{tr('自动建议')}</th>
-                <th>{tr('当前探测频率')}</th>
-                <th>{tr('模式')}</th>
-                <th>{tr('手动探测')}</th>
+                {planTab === 'probeable' && <>
+                  <th>{tr('自动建议')}</th>
+                  <th>{tr('当前探测频率')}</th>
+                  <th>{tr('模式')}</th>
+                  <th>{tr('手动探测')}</th>
+                </>}
+                {planTab !== 'probeable' && <th>{tr('状态')}</th>}
               </tr>
             </thead>
             <tbody>
@@ -283,15 +311,17 @@ export default function ProbePlan() {
                   </td>
                   <td><TypeBadge type={model.type} /></td>
                   <td className="is-numeric probe-plan-calls">{model.recentCalls.toLocaleString()}</td>
-                  <td className="probe-plan-auto-value">{formatInterval(model.automaticIntervalHours)}</td>
-                  <td>{renderIntervalControl(model)}</td>
-                  <td><span className={`probe-plan-mode${model.overridden ? ' is-custom' : ''}`}>{model.overridden ? tr('手动') : tr('自动')}</span></td>
-                  <td>{renderProbeButton(model)}</td>
+                  {planTab === 'probeable' ? <>
+                    <td className="probe-plan-auto-value">{formatInterval(model.automaticIntervalHours)}</td>
+                    <td>{renderIntervalControl(model)}</td>
+                    <td><span className={`probe-plan-mode${model.overridden ? ' is-custom' : ''}`}>{model.overridden ? tr('手动') : tr('自动')}</span></td>
+                    <td>{renderProbeButton(model)}</td>
+                  </> : <td className="probe-plan-status-cell"><StateBadge state={planTab} /></td>}
                   </tr>
-                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={7}><KeyDetails model={model} /></td></tr>}
+                  {expandedModel === model.modelName && <tr className="probe-plan-detail-row"><td colSpan={planTab === 'probeable' ? 7 : 4}><KeyDetails model={model} /></td></tr>}
                 </Fragment>
               ))}
-              {filteredModels.length === 0 && <tr><td colSpan={7} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
+              {filteredModels.length === 0 && <tr><td colSpan={planTab === 'probeable' ? 7 : 4} className="probe-plan-no-results">{tr('没有匹配的模型')}</td></tr>}
             </tbody>
           </table>
         </div>
@@ -313,6 +343,14 @@ function FilterTab({ active, label, count, onClick }: { active: boolean; label: 
   return (
     <button type="button" aria-pressed={active} className={`probe-plan-tab${active ? ' is-active' : ''}`} onClick={onClick}>
       <span>{label}</span><span className="probe-plan-tab-count">{count}</span>
+    </button>
+  );
+}
+
+function StatusTab({ active, label, count, onClick }: { active: boolean; label: string; count: number; onClick: () => void }) {
+  return (
+    <button type="button" role="tab" aria-selected={active} className={`probe-plan-status-tab${active ? ' is-active' : ''}`} onClick={onClick}>
+      <span>{label}</span><span className="probe-plan-status-count">{count}</span>
     </button>
   );
 }
@@ -342,8 +380,6 @@ function KeyDetails({ model }: { model: ProbePlanModel }) {
   const keys = model.keyResults;
   const availableCount = keys.filter((key) => key.routeState === 'available').length;
   const unavailableCount = keys.filter((key) => key.routeState === 'unavailable' || key.routeState === 'probe-disabled').length;
-  const manualDisabledCount = keys.filter((key) => key.routeState === 'manual-disabled').length;
-  const policyDisabledCount = keys.filter((key) => key.routeState === 'policy-disabled').length;
   const unprobedCount = keys.filter((key) => !key.lastProbe).length;
   return (
     <div className="probe-plan-key-details">
@@ -352,16 +388,27 @@ function KeyDetails({ model }: { model: ProbePlanModel }) {
         <div className="probe-plan-key-summary">
           <span className="is-good">{availableCount} {tr('可路由')}</span>
           <span className="is-bad">{unavailableCount} {tr('不可用')}</span>
-          <span>{manualDisabledCount} {tr('手动禁用')}</span>
-          {policyDisabledCount > 0 && <span>{policyDisabledCount} {tr('策略禁用')}</span>}
+          <span>{model.manualExcludedKeys.length} {tr('手动排除')}</span>
+          <span>{model.policyExcludedKeys.length} {tr('策略排除')}</span>
           <span>{unprobedCount} {tr('未探测')}</span>
         </div>
       </div>
-      {keys.length === 0 ? (
-        <div className="probe-plan-key-empty">{tr('没有可用的上游 Key 模型记录')}</div>
-      ) : (
-        <div className="probe-plan-key-list">
-          {keys.map((key) => (
+      {keys.length > 0 && <KeyResultSection title={tr('探测对象')} keys={keys} />}
+      {model.manualExcludedKeys.length > 0 && <KeyResultSection title={tr('手动禁用的 Key')} keys={model.manualExcludedKeys} />}
+      {model.policyExcludedKeys.length > 0 && <KeyResultSection title={tr('策略排除的 Key')} keys={model.policyExcludedKeys} />}
+      {keys.length === 0 && model.manualExcludedKeys.length === 0 && model.policyExcludedKeys.length === 0 && (
+        <div className="probe-plan-key-empty">{tr('没有上游 Key 模型记录')}</div>
+      )}
+    </div>
+  );
+}
+
+function KeyResultSection({ title, keys }: { title: string; keys: ProbePlanKeyResult[] }) {
+  return (
+    <section className="probe-plan-key-section">
+      <h3>{title}<span>{keys.length}</span></h3>
+      <div className="probe-plan-key-list">
+        {keys.map((key) => (
             <section className="probe-plan-key-row" key={`${key.siteId}:${key.accountId}:${key.keyId ?? 'account'}`}>
               <div className="probe-plan-key-identity">
                 <div className="probe-plan-key-primary">{key.siteName}<span>{key.platform}</span></div>
@@ -394,15 +441,15 @@ function KeyDetails({ model }: { model: ProbePlanModel }) {
                 <div className="probe-plan-key-footnote">{tr('可用性更新于')} {formatDate(key.availabilityCheckedAt)}</div>
               )}
             </section>
-          ))}
-        </div>
-      )}
-    </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
-function StateBadge({ state }: { state: ProbePlanModel['keyResults'][number]['routeState'] }) {
+function StateBadge({ state }: { state: ProbePlanTab | ProbePlanKeyResult['routeState'] }) {
   const labels = {
+    probeable: tr('可探测'),
     'manual-disabled': tr('手动禁用'),
     'policy-disabled': tr('策略禁用'),
     'probe-disabled': tr('探测禁用'),

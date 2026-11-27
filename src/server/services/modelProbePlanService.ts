@@ -278,7 +278,8 @@ export async function getModelProbePlan() {
   const attachKeyDetails = (row: typeof candidateRows[number]) => {
     const modelName = String(row.modelName || '');
     const matchingDisables = getMatchingDisables(row, modelName);
-    const disable = matchingDisables.find((item) => item.source === 'manual' || item.source === 'policy')
+    const disable = matchingDisables.find((item) => item.source === 'manual')
+      ?? matchingDisables.find((item) => item.source === 'policy')
       ?? matchingDisables[0];
     const probe = latestProbeByCell.get(`token:${row.tokenId}:${modelName.toLowerCase()}`) ?? null;
     const routeState = disable?.source === 'policy'
@@ -307,17 +308,31 @@ export async function getModelProbePlan() {
     };
   };
   const detailsByModel = new Map<string, ReturnType<typeof attachKeyDetails>[]>();
+  const manualExcludedByModel = new Map<string, ReturnType<typeof attachKeyDetails>[]>();
+  const policyExcludedByModel = new Map<string, ReturnType<typeof attachKeyDetails>[]>();
   for (const row of candidateRows) {
     const key = String(row.modelName || '').toLowerCase();
-    if (getMatchingDisables(row, String(row.modelName || '')).some((item) => item.source === 'manual')) continue;
-    const rows = detailsByModel.get(key) ?? [];
-    rows.push(attachKeyDetails(row));
-    detailsByModel.set(key, rows);
+    const detail = attachKeyDetails(row);
+    const target = detail.routeState === 'manual-disabled'
+      ? manualExcludedByModel
+      : detail.routeState === 'policy-disabled'
+        ? policyExcludedByModel
+        : detailsByModel;
+    const rows = target.get(key) ?? [];
+    rows.push(detail);
+    target.set(key, rows);
   }
   for (const row of accountOnlyRows) {
     const key = String(row.modelName || '').toLowerCase();
-    const rows = detailsByModel.get(key) ?? [];
-    rows.push({
+    const matchingAccountDisables = disabledRows.filter((item) => (
+      item.siteId === row.siteId
+      && (item.accountId == null || item.accountId === row.accountId)
+      && item.tokenId === 0
+      && matchesDisabledModelName(String(item.modelName || ''), String(row.modelName || ''))
+    ));
+    const accountDisable = matchingAccountDisables.find((item) => item.source === 'manual')
+      ?? matchingAccountDisables.find((item) => item.source === 'policy');
+    const detail = {
       keyId: null,
       keyName: '账号级凭据',
       keyGroup: null,
@@ -330,25 +345,54 @@ export async function getModelProbePlan() {
       connectivity: row.connectivity,
       availabilityLatencyMs: row.latencyMs,
       availabilityCheckedAt: row.checkedAt,
-      routeState: row.available === true ? 'available' : row.available === false ? 'unavailable' : 'unknown',
+      routeState: accountDisable?.source === 'manual'
+        ? 'manual-disabled' as const
+        : accountDisable?.source === 'policy'
+          ? 'policy-disabled' as const
+          : row.available === true ? 'available' as const : row.available === false ? 'unavailable' as const : 'unknown' as const,
       lastProbe: latestProbeByCell.get(`account:${row.accountId}:${String(row.modelName || '').toLowerCase()}`) ?? null,
       recentCalls: accountUsage.get(`${row.accountId}:${String(row.modelName || '').toLowerCase()}`) || 0,
-    });
-    detailsByModel.set(key, rows);
+    };
+    const target = detail.routeState === 'manual-disabled'
+      ? manualExcludedByModel
+      : detail.routeState === 'policy-disabled'
+        ? policyExcludedByModel
+        : detailsByModel;
+    const rows = target.get(key) ?? [];
+    rows.push(detail);
+    target.set(key, rows);
   }
   return {
     intervals: [...MODEL_PROBE_INTERVALS_HOURS],
     models: models.map((modelName) => {
       const recentCalls = usage.get(modelName.toLowerCase()) || 0;
       const override = overrides[modelName.toLowerCase()] ?? null;
+      const keyResults = detailsByModel.get(modelName.toLowerCase()) ?? [];
+      const manualExcludedKeys = manualExcludedByModel.get(modelName.toLowerCase()) ?? [];
+      const policyExcludedKeys = policyExcludedByModel.get(modelName.toLowerCase()) ?? [];
+      const tab = keyResults.length > 0 ? 'probeable'
+        : manualExcludedKeys.length > 0 && policyExcludedKeys.length === 0 ? 'manual-disabled'
+          : policyExcludedKeys.length > 0 ? 'policy-disabled'
+            : 'probeable';
       return {
         modelName,
         type: classifyProbeModel(modelName),
+        tab,
         recentCalls,
         intervalHours: override ?? getDefaultProbeIntervalHours(modelName, recentCalls),
         automaticIntervalHours: getDefaultProbeIntervalHours(modelName, recentCalls),
         overridden: override !== null,
-        keyResults: (detailsByModel.get(modelName.toLowerCase()) ?? []).sort((a, b) => (
+        keyResults: keyResults.sort((a, b) => (
+          String(a.siteName || '').localeCompare(String(b.siteName || ''))
+          || String(a.accountName || '').localeCompare(String(b.accountName || ''))
+          || String(a.keyName || '').localeCompare(String(b.keyName || ''))
+        )),
+        manualExcludedKeys: manualExcludedKeys.sort((a, b) => (
+          String(a.siteName || '').localeCompare(String(b.siteName || ''))
+          || String(a.accountName || '').localeCompare(String(b.accountName || ''))
+          || String(a.keyName || '').localeCompare(String(b.keyName || ''))
+        )),
+        policyExcludedKeys: policyExcludedKeys.sort((a, b) => (
           String(a.siteName || '').localeCompare(String(b.siteName || ''))
           || String(a.accountName || '').localeCompare(String(b.accountName || ''))
           || String(a.keyName || '').localeCompare(String(b.keyName || ''))
