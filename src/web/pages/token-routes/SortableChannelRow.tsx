@@ -64,6 +64,7 @@ export function SortableChannelRow({
     transition: rowTransition || undefined,
     opacity: 1,
     display: 'grid',
+    minWidth: 0,
     gridTemplateColumns: managementLocked || mobile ? 'minmax(0, 1fr)' : 'minmax(0, 1fr) auto auto auto',
     alignItems: mobile ? 'stretch' : 'center',
     gap: mobile ? 8 : 6,
@@ -131,11 +132,18 @@ export function SortableChannelRow({
                 </span>
               ) : null}
 
-              <span style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 14, minWidth: 0 }}>
+              <span
+                style={{ fontWeight: 600, color: 'var(--color-text-primary)', fontSize: 14, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                data-tooltip={suppressTooltips ? undefined : channel.account?.username}
+              >
                 {channel.account?.username || `account-${channel.accountId}`}
               </span>
 
-              <span className="badge badge-muted" style={{ fontSize: 10 }}>
+              <span
+                className="badge badge-muted"
+                style={{ fontSize: 10, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                data-tooltip={suppressTooltips ? undefined : channel.site?.name}
+              >
                 {channel.site?.name || 'unknown'}
               </span>
 
@@ -192,7 +200,11 @@ export function SortableChannelRow({
                 </span>
               ) : null}
               {channel.sourceModel ? (
-                <span className="badge badge-muted" style={{ fontSize: 10 }}>
+                <span
+                  className="badge badge-muted"
+                  style={{ fontSize: 10, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                  data-tooltip={suppressTooltips ? undefined : channel.sourceModel}
+                >
                   {channel.sourceModel}
                 </span>
               ) : null}

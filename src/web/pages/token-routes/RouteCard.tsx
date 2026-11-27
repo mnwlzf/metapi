@@ -110,6 +110,7 @@ function PriorityRailNewLayerRow({
         ref={setNodeRef}
         data-testid="route-priority-new-layer-target"
         style={{
+          gridColumn: '1 / -1',
           display: 'flex',
           alignItems: 'center',
           gap: 8,
@@ -206,6 +207,7 @@ function PriorityBucketHeader({
       data-testid={testId}
       className="route-priority-bucket-header"
       style={{
+        gridColumn: '1 / -1',
         display: 'flex',
         alignItems: 'center',
         gap: 6,
@@ -416,6 +418,7 @@ function SortableChannelShell({
         transition: shellTransition || undefined,
         zIndex: isDragging ? 10 : undefined,
         willChange: isDragging ? 'transform' : 'auto',
+        minWidth: 0,
         display: compact ? 'flex' : 'grid',
         flexDirection: compact ? 'column' : undefined,
         gridTemplateColumns: compact ? undefined : '86px minmax(0, 1fr)',
@@ -1126,7 +1129,15 @@ function RouteCardInner({
             <SortableContext items={(channels || []).map((channel) => channel.id)} strategy={translateOnlyRectSortingStrategy}>
               <div
                 data-testid="route-channel-sortable-list"
-                style={{ display: 'flex', flexDirection: 'column', gap: compact ? 8 : 4 }}
+                style={{
+                  display: compact && detailPanel ? 'grid' : 'flex',
+                  gridTemplateColumns: compact && detailPanel
+                    ? 'repeat(auto-fill, minmax(min(100%, 340px), 1fr))'
+                    : undefined,
+                  flexDirection: 'column',
+                  alignItems: compact && detailPanel ? 'start' : undefined,
+                  gap: compact ? 8 : 4,
+                }}
               >
                 {priorityBuckets.map((bucket, bucketIndex) => {
                   const railSection = priorityRailSections[bucketIndex];
