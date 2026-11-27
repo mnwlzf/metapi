@@ -114,6 +114,44 @@ describe('background consumption collection', () => {
     expect(mocks.fetch).toHaveBeenCalledTimes(2);
     expect(mocks.fetch.mock.calls.map((args) => args[1])).toEqual(['offline-session', 'second-session']);
   });
+  it.each([1, 2])('shares the strictest eligible origin budget after %i requests, excluding duplicate and unsupported accounts', async (requestsUsed) => {
+    await db.insert(schema.sites).values([
+      { id: 2, name: 'same origin', url: 'https://offline.invalid/other', platform: 'sub2api' },
+      { id: 3, name: 'duplicate', url: 'https://offline.invalid/duplicate', platform: 'sub2api' },
+      { id: 4, name: 'unsupported', url: 'https://offline.invalid/unsupported', platform: 'openai' },
+    ]).run();
+    await db.insert(schema.accounts).values([
+      { id: 2, siteId: 2, accessToken: 'second-session', extraConfig: JSON.stringify({ platformUserId: 14 }) },
+      { id: 3, siteId: 3, accessToken: 'duplicate-session', extraConfig: JSON.stringify({ platformUserId: 13 }) },
+      { id: 4, siteId: 4, accessToken: 'unsupported-session' },
+    ]).run();
+    const state = await due();
+    await service.updateUsageCollectionConfig({
+      defaults: { ...DEFAULT_USAGE_POLICY, originHourlyBudget: 20 },
+      sites: {
+        '1': { originHourlyBudget: 2 },
+        '2': { originHourlyBudget: 5 },
+        '3': { originHourlyBudget: 1 },
+        '4': { originHourlyBudget: 1 },
+      },
+    });
+    // Settings updates reschedule tasks, so make both eligible accounts due
+    // again to ensure the origin budget is what decides whether work runs.
+    await store.storeUsageAccountState(1, structuredClone(state));
+    await store.storeUsageAccountState(2, structuredClone(state));
+    const { upsertSetting } = await import('../db/upsertSetting.js');
+    await upsertSetting('usage_collection_origins', {
+      'https://offline.invalid': {
+        requestTimes: Array.from({ length: requestsUsed }, () => Date.now() - 1000),
+        nextAt: 0,
+        cooldownUntil: 0,
+      },
+    });
+
+    await service.runUsageCollectionPass();
+
+    expect(mocks.fetch).toHaveBeenCalledTimes(requestsUsed < 2 ? 1 : 0);
+  });
   it('replaces historical daily snapshots instead of adding repeated backfill amounts', async () => {
     const state = await due();
     for (const task of Object.values(state.tasks)) task.nextAt = Date.now() + 86400_000;

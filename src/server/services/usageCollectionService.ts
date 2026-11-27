@@ -245,9 +245,17 @@ async function runPass(): Promise<void> {
   const records = await listUsageCollectedRecords();
   const jobs: Array<() => Promise<void>> = []; const claimed = new Set<string>();
   const ordered = await Promise.all((await candidates(config)).map(async (row) => ({ row, state: await readUsageAccountState(row.account.id) })));
+  const originHourlyBudgets = new Map<string, number>();
   for (const { row } of ordered) {
-    const sameOrigin = ordered.filter((other) => other.row.origin === row.origin && !other.row.reason && !other.row.duplicateOf);
-    row.policy.originHourlyBudget = Math.min(...sameOrigin.map((other) => other.row.policy.originHourlyBudget));
+    if (row.reason || row.duplicateOf) continue;
+    const current = originHourlyBudgets.get(row.origin);
+    originHourlyBudgets.set(row.origin, current === undefined
+      ? row.policy.originHourlyBudget
+      : Math.min(current, row.policy.originHourlyBudget));
+  }
+  for (const { row } of ordered) {
+    const budget = originHourlyBudgets.get(row.origin);
+    if (budget !== undefined) row.policy.originHourlyBudget = budget;
   }
   ordered.sort((a, b) => {
     const latest = (state: UsageAccountState | null) => Math.max(0, ...Object.values(state?.tasks || {}).map((task) => Date.parse(task.lastAttemptAt || '') || 0));
