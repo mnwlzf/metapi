@@ -254,7 +254,6 @@
 
 .route-detail-panel-presence {
   overflow: visible;
-  order: 1;
 }
 
 .route-detail-panel-presence.is-closing {

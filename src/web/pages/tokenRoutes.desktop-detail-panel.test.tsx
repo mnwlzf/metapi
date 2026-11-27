@@ -199,6 +199,34 @@ describe('TokenRoutes desktop detail panel', () => {
       expect(detailPanels).toHaveLength(1);
       const detailPanelText = collectText(detailPanels[0]!);
       expect(detailPanelText).toContain('gpt-4o-mini');
+
+      const grid = root.root.find((node) => (
+        node.type === 'div' && node.props.className === 'route-card-grid'
+      ));
+      const gridItems = grid.findAll((node) => (
+        node.type === 'div'
+        && /route-card-collapsed|route-detail-panel-presence/.test(String(node.props.className || ''))
+      ));
+      expect(gridItems).toHaveLength(3);
+      expect(gridItems[0]).toBe(firstSummaryCard);
+      expect(String(gridItems[1]!.props.className)).toContain('route-detail-panel-presence');
+      expect(collectText(gridItems[2]!)).toContain('claude-3.7-sonnet');
+      expect(gridItems[1]!.props.style.gridColumn).toBe('1 / -1');
+
+      await act(async () => {
+        await gridItems[2]!.props.onClick();
+      });
+      await flushMicrotasks();
+
+      const openPanels = grid.findAll((node) => (
+        node.type === 'div'
+        && String(node.props.className || '').includes('route-detail-panel-presence')
+        && String(node.props.className || '').includes('is-open')
+      ));
+      expect(openPanels).toHaveLength(1);
+      expect(collectText(openPanels[0]!)).toContain('claude-3.7-sonnet');
+      expect(apiMock.getRouteChannels).toHaveBeenCalledWith(1);
+      expect(apiMock.getRouteChannels).toHaveBeenCalledWith(2);
     } finally {
       root?.unmount();
     }
