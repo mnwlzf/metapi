@@ -329,12 +329,14 @@ export function resolveRateCapDisplay(log: ProxyLogRenderItem): {
   tone: 'ok' | 'over' | 'unknown';
 } {
   const rate = typeof log.tokenGroupRate === 'number' ? log.tokenGroupRate : null;
+  const floor = typeof log.downstreamKeyMinUpstreamRate === 'number' ? log.downstreamKeyMinUpstreamRate : null;
   const cap = typeof log.downstreamKeyMaxUpstreamRate === 'number' ? log.downstreamKeyMaxUpstreamRate : null;
-  if (rate === null && cap === null) return { label: '--', tone: 'unknown' };
+  if (rate === null && floor === null && cap === null) return { label: '--', tone: 'unknown' };
   const rateText = rate === null ? '?' : formatCompactNumber(rate);
-  const capText = cap === null ? tr('不限') : `<=${formatCompactNumber(cap)}`;
-  const tone = rate === null || cap === null ? 'unknown' : (rate <= cap ? 'ok' : 'over');
-  return { label: `${rateText} / ${capText}`, tone };
+  const rangeText = `${floor === null ? '' : `>=${formatCompactNumber(floor)}`}${floor !== null && cap !== null ? ' ' : ''}${cap === null ? '' : `<=${formatCompactNumber(cap)}`}` || tr('不限');
+  const outside = rate !== null && ((floor !== null && rate < floor) || (cap !== null && rate > cap));
+  const tone = rate === null || (floor === null && cap === null) ? 'unknown' : outside ? 'over' : 'ok';
+  return { label: `${rateText} / ${rangeText}`, tone };
 }
 
 export function formatProxyLogUsageSource(
