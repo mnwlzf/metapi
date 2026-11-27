@@ -936,6 +936,8 @@ export function createSurfaceFailureToolkit(input: {
       requestedModel: string;
       modelName: string;
       failure: { status: number; reason: string };
+      /** Actual upstream HTTP status, independent of the detected business failure. */
+      httpStatus?: number;
       isStream?: boolean | null;
       firstByteLatencyMs?: number | null;
       latencyMs: number;
@@ -989,7 +991,7 @@ export function createSurfaceFailureToolkit(input: {
         selected: args.selected,
         modelRequested: args.requestedModel,
         status: 'failed',
-        httpStatus: args.failure.status,
+        httpStatus: args.httpStatus ?? args.failure.status,
         isStream: args.isStream ?? null,
         firstByteLatencyMs: args.firstByteLatencyMs ?? null,
         latencyMs: args.latencyMs,

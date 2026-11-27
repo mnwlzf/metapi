@@ -23,10 +23,9 @@ const resolveProxyUsageWithSelfLogFallbackMock = vi.fn(async ({ usage }: any) =>
   estimatedCostFromQuota: 0,
   recoveredFromSelfLog: false,
 }));
+const insertProxyLogValuesMock = vi.fn(() => ({ run: () => undefined }));
 const dbInsertMock = vi.fn((_arg?: any) => ({
-  values: () => ({
-    run: () => undefined,
-  }),
+  values: insertProxyLogValuesMock,
 }));
 
 vi.mock('undici', async () => {
@@ -117,9 +116,14 @@ vi.mock('../../db/index.js', () => ({
     }),
   },
   hasProxyLogBillingDetailsColumn: async () => false,
+  hasProxyLogResponseModelColumn: async () => false,
+  hasProxyLogReasoningEffortColumn: async () => false,
+  hasProxyLogCacheTokensColumns: async () => false,
+  hasProxyLogTokenIdColumn: async () => false,
+  hasProxyLogTokenGroupRateColumn: async () => false,
   hasProxyLogClientColumns: async () => false,
   hasProxyLogDownstreamApiKeyIdColumn: async () => false,
-  hasProxyLogStreamTimingColumns: async () => false,
+  hasProxyLogStreamTimingColumns: async () => true,
   schema: {
     proxyLogs: {},
     siteApiEndpoints: {
@@ -159,6 +163,7 @@ describe('chat proxy stream behavior', () => {
     fetchModelPricingCatalogMock.mockReset();
     resolveProxyUsageWithSelfLogFallbackMock.mockClear();
     dbInsertMock.mockClear();
+    insertProxyLogValuesMock.mockClear();
     resetUpstreamEndpointRuntimeState();
 
     selectChannelMock.mockReturnValue({
@@ -1940,6 +1945,82 @@ describe('chat proxy stream behavior', () => {
     expect(response.body).toContain('response.completed');
   });
 
+  it.each([
+    ['native SSE', 'text/event-stream', 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"Upstream service temporarily unavailable"}}}\n\n'],
+    ['mislabelled SSE', 'text/plain', 'event: error\ndata: {"error":{"message":"Upstream service temporarily unavailable"}}\n\n'],
+    ['JSON', 'application/json', '{"type":"response.failed","response":{"error":{"message":"Upstream service temporarily unavailable"}}}'],
+    ['websocket SSE replay', 'text/event-stream', 'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"message":"Upstream service temporarily unavailable"}}}\n\n'],
+  ])('fails over an immediate %s failure without leaking the failed stream', async (kind, contentType, failedBody) => {
+    const originalAttempts = config.proxyMaxChannelAttempts;
+    config.proxyMaxChannelAttempts = 2;
+    try {
+      selectNextChannelMock.mockReturnValue({
+        channel: { id: 12, routeId: 22 },
+        site: { name: 'backup-site', url: 'https://backup.example.com' },
+        account: { id: 34, username: 'backup-user' },
+        tokenName: 'backup',
+        tokenValue: 'sk-backup',
+        actualModel: 'upstream-gpt',
+      });
+      fetchMock
+        .mockResolvedValueOnce(new Response(failedBody, {
+          status: 200, headers: { 'content-type': contentType },
+        }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({
+          id: 'resp_backup', object: 'response', status: 'completed',
+          output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'backup answer' }] }],
+          usage: { input_tokens: 2, output_tokens: 3, total_tokens: 5 },
+        }), { status: 200, headers: { 'content-type': 'application/json' } }));
+
+      const response = await app.inject({
+        method: 'POST', url: '/v1/responses',
+        headers: kind === 'websocket SSE replay' ? {
+          'x-metapi-responses-websocket-transport': '1',
+          [INTERNAL_TRANSPORT_NONCE_HEADER]: INTERNAL_TRANSPORT_NONCE,
+        } : {},
+        payload: { model: 'gpt-5.2', input: 'hello', stream: true },
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('backup answer');
+      expect(response.body).toContain('response.completed');
+      expect(response.body).not.toContain('response.failed');
+      expect(response.body).not.toContain('temporarily unavailable');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(recordFailureMock).toHaveBeenCalledWith(11, expect.objectContaining({ status: 502 }));
+      expect(insertProxyLogValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'failed', httpStatus: 200, isStream: true,
+        firstByteLatencyMs: expect.any(Number), retryCount: 0,
+      }));
+      expect(insertProxyLogValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+        status: 'success', retryCount: 1,
+      }));
+    } finally {
+      config.proxyMaxChannelAttempts = originalAttempts;
+    }
+  });
+
+  it('returns a terminal HTTP error when an immediate Responses stream failure exhausts attempts', async () => {
+    const originalAttempts = config.proxyMaxChannelAttempts;
+    config.proxyMaxChannelAttempts = 1;
+    try {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'event: error\ndata: {"error":{"message":"Upstream service temporarily unavailable"}}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      ));
+      const response = await app.inject({
+        method: 'POST', url: '/v1/responses',
+        payload: { model: 'gpt-5.2', input: 'hello', stream: true },
+      });
+      expect(response.statusCode).toBe(502);
+      expect(response.json().error.message).toContain('Upstream service temporarily unavailable');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(selectNextChannelMock).not.toHaveBeenCalled();
+    } finally {
+      config.proxyMaxChannelAttempts = originalAttempts;
+    }
+  });
+
   it('emits response.failed without synthetic response.completed when upstream stream fails on /v1/responses', async () => {
     fetchModelPricingCatalogMock.mockResolvedValue({
       models: [
@@ -1954,7 +2035,7 @@ describe('chat proxy stream behavior', () => {
     const encoder = new TextEncoder();
     const upstreamBody = new ReadableStream<Uint8Array>({
       start(controller) {
-        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-r3","model":"upstream-gpt","choices":[{"delta":{"role":"assistant"},"finish_reason":null}]}\n\n'));
+        controller.enqueue(encoder.encode('data: {"id":"chatcmpl-r3","model":"upstream-gpt","choices":[{"delta":{"role":"assistant","content":"partial answer"},"finish_reason":null}]}\n\n'));
         controller.enqueue(encoder.encode('event: error\ndata: {"type":"error","error":{"message":"upstream stream failed","type":"upstream_error"}}\n\n'));
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
@@ -1981,6 +2062,12 @@ describe('chat proxy stream behavior', () => {
     expect(response.body).toContain('"status":"failed"');
     expect(response.body).not.toContain('response.completed');
     expect(response.body).toContain('[DONE]');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(selectNextChannelMock).not.toHaveBeenCalled();
+    expect(insertProxyLogValuesMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed', httpStatus: 200, isStream: true,
+      firstByteLatencyMs: expect.any(Number),
+    }));
   });
 
   it('preserves Responses-specific payload fields and forwards openai headers on /v1/responses', async () => {

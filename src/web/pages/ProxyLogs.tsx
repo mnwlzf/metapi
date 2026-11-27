@@ -2529,7 +2529,7 @@ export default function ProxyLogs() {
                                         detailLog.promptTokens,
                                       )}{' '}
                                       tokens
-                                      {' + tr('}输出{') '}
+                                      {' + '}{tr('输出')}{' '}
                                       {formatProxyLogTokenValue(
                                         detailLog.completionTokens,
                                       )}{' '}

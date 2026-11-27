@@ -1017,6 +1017,31 @@ describe('selectSurfaceChannelForAttempt', () => {
     });
   });
 
+  it('logs the upstream HTTP status and timing while classifying a stream failure as 502', async () => {
+    const { createSurfaceFailureToolkit } = await import('./sharedSurface.js');
+    const toolkit = createSurfaceFailureToolkit({
+      warningScope: 'responses', downstreamPath: '/v1/responses',
+      maxRetries: 0, clientContext: null, downstreamApiKeyId: null,
+    });
+    const result = await toolkit.handleDetectedFailure({
+      selected: {
+        channel: { id: 11, routeId: 22 },
+        account: { id: 33, username: 'demo-user' },
+        site: { name: 'demo-site' }, actualModel: 'upstream-model',
+      },
+      requestedModel: 'gpt-5.2', modelName: 'upstream-model',
+      failure: { status: 502, reason: 'Upstream service temporarily unavailable' },
+      httpStatus: 201, isStream: true, firstByteLatencyMs: 27,
+      latencyMs: 30000, retryCount: 0, upstreamPath: '/v1/responses',
+    });
+    expect(result).toMatchObject({ action: 'respond', status: 502 });
+    expect(recordFailureMock).toHaveBeenCalledWith(11, expect.objectContaining({ status: 502 }));
+    expect(insertProxyLogMock).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'failed', httpStatus: 201, isStream: true,
+      firstByteLatencyMs: 27, latencyMs: 30000,
+    }));
+  });
+
   it('returns a terminal 502 for exhausted network failures through the shared failure toolkit', async () => {
     composeProxyLogMessageMock.mockReturnValue('normalized error');
     formatUtcSqlDateTimeMock.mockReturnValue('2026-03-21 22:00:00');

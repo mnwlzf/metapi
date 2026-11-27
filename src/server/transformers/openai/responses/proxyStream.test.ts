@@ -5,6 +5,39 @@ import { config } from '../../../config.js';
 import { createResponsesProxyStreamSession } from './proxyStream.js';
 
 describe('createResponsesProxyStreamSession', () => {
+  it.each([false, true])('reports whether a failed terminal carries partial output: %s', (hasOutput) => {
+    const failureWrites: Array<{ lines: string[]; hasOutput: boolean }> = [];
+    const ordinaryWrites: string[] = [];
+    const payload = {
+      type: 'response.failed',
+      response: {
+        id: 'resp_failed', status: 'failed',
+        error: { message: 'Upstream service temporarily unavailable' },
+        output: hasOutput ? [{
+          type: 'message', role: 'assistant',
+          content: [{ type: 'output_text', text: 'partial answer' }],
+        }] : [],
+      },
+    };
+    const session = createResponsesProxyStreamSession({
+      modelName: 'gpt-5.2', successfulUpstreamPath: '/v1/responses',
+      getUsage: () => ({
+        promptTokens: 0, completionTokens: 0, totalTokens: 0,
+        cacheReadTokens: 0, cacheCreationTokens: 0, promptTokensIncludeCache: null,
+      }),
+      writeLines: (lines) => ordinaryWrites.push(...lines),
+      writeFailureLines: (lines, hasOutput) => failureWrites.push({ lines, hasOutput }),
+      writeRaw: () => {},
+    });
+    const result = session.consumeUpstreamFinalPayload(payload, JSON.stringify(payload));
+    expect(result).toEqual({ status: 'failed', errorMessage: 'Upstream service temporarily unavailable' });
+    expect(ordinaryWrites).toEqual([]);
+    expect(failureWrites).toHaveLength(1);
+    expect(failureWrites[0].hasOutput).toBe(hasOutput);
+    expect(failureWrites[0].lines.join('')).toContain('response.failed');
+    if (hasOutput) expect(failureWrites[0].lines.join('')).toContain('partial answer');
+  });
+
   it('serializes non-SSE fallback payloads into canonical responses SSE closeout events', () => {
     const lines: string[] = [];
     let ended = false;

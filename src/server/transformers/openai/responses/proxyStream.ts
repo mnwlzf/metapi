@@ -44,6 +44,8 @@ type ResponsesProxyStreamSessionInput = {
   };
   onParsedPayload?: (payload: unknown) => void;
   writeLines: (lines: string[]) => void;
+  /** Allows an uncommitted transport to handle a failure through its retry policy. */
+  writeFailureLines?: (lines: string[], hasOutput: boolean) => void;
   writeRaw: (chunk: string) => void;
 };
 
@@ -146,7 +148,15 @@ export function createResponsesProxyStreamSession(input: ResponsesProxyStreamSes
       status: 'failed',
       errorMessage: getResponsesStreamFailureMessage(payload, fallbackMessage),
     };
-    input.writeLines(failResponsesStream(responsesState, streamContext, input.getUsage(), payload));
+    const lines = failResponsesStream(responsesState, streamContext, input.getUsage(), payload);
+    const responsePayload = isRecord(payload) && isRecord(payload.response) ? payload.response : payload;
+    const hasOutput = hasVisibleAggregateOutput(responsesState)
+      || hasVisibleResponsesPayloadOutput(responsePayload);
+    if (input.writeFailureLines) {
+      input.writeFailureLines(lines, hasOutput);
+    } else {
+      input.writeLines(lines);
+    }
   };
 
   const complete = () => {
