@@ -130,6 +130,85 @@ describe('key-scoped manual model bans across discovery, probes and routing', ()
     expect(model?.policyExcludedKeys).toEqual([]);
   });
 
+  it('does not fan out a historical account-wide probe ban to Keys without a current model row', async () => {
+    const { site, account, a, b } = await seed();
+    await ban(account.id, a.id);
+    await db.delete(schema.tokenModelAvailability)
+      .where(and(eq(schema.tokenModelAvailability.tokenId, b.id), eq(schema.tokenModelAvailability.modelName, 'gpt-4o'))).run();
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'gpt-4o', source: 'probe',
+    }).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const model = (await getModelProbePlan()).models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.tab).toBe('manual-disabled');
+    expect(model?.keyResults).toEqual([]);
+    expect(model?.manualExcludedKeys.map((key) => key.keyId)).toEqual([a.id]);
+    expect(model?.manualExcludedKeys[0]?.routeState).toBe('manual-disabled');
+  });
+
+  it.each(['probe', 'legacy', 'log-only'])('ignores stale per-Key %s records when every current supplier is manually disabled', async (kind) => {
+    const { site, account, a, b } = await seed();
+    await ban(account.id, a.id);
+    await db.delete(schema.tokenModelAvailability)
+      .where(and(eq(schema.tokenModelAvailability.tokenId, b.id), eq(schema.tokenModelAvailability.modelName, 'gpt-4o'))).run();
+    if (kind !== 'log-only') await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id, accountId: account.id, tokenId: b.id, modelName: 'gpt-4o',
+      source: kind === 'legacy' ? null : 'probe',
+    }).run();
+    await db.insert(schema.probeLogs).values({
+      siteId: site.id, accountId: account.id, tokenId: b.id, modelName: 'gpt-4o',
+      questionCategory: 'text', questionText: 'old probe', status: 'failed',
+    }).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const model = (await getModelProbePlan()).models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.tab).toBe('manual-disabled');
+    expect(model?.keyResults).toEqual([]);
+    expect(model?.manualExcludedKeys.map((key) => key.keyId)).toEqual([a.id]);
+    expect(model?.pendingVerificationCount).toBe(0);
+    // Historical diagnostics remain available; aggregation does not rewrite them.
+    expect(await db.select().from(schema.probeLogs).all()).toHaveLength(1);
+  });
+
+  it('does not list a model supplied only by the account union and stale probe rows', async () => {
+    const { site, account, a } = await seed();
+    await db.delete(schema.tokenModelAvailability).run();
+    await db.insert(schema.siteDisabledModels).values({
+      siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o', source: 'probe',
+    }).run();
+    await db.insert(schema.probeLogs).values({
+      siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o',
+      questionCategory: 'text', questionText: 'old probe', status: 'failed',
+    }).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    expect((await getModelProbePlan()).models).toEqual([]);
+  });
+
+  it('prioritizes manual bans over old probe and policy records for the same Key-model', async () => {
+    const { site, account, a, b } = await seed();
+    await ban(account.id, a.id);
+    await ban(account.id, b.id);
+    await db.insert(schema.siteDisabledModels).values([
+      { siteId: site.id, accountId: account.id, tokenId: 0, modelName: 'gpt-4o', source: 'probe' },
+      { siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'openai/gpt-4o', source: 'policy' },
+    ]).run();
+    await db.insert(schema.probeLogs).values({
+      siteId: site.id, accountId: account.id, tokenId: a.id, modelName: 'gpt-4o',
+      questionCategory: 'text', questionText: 'old probe', status: 'failed',
+    }).run();
+
+    const { getModelProbePlan } = await import('../../services/modelProbePlanService.js');
+    const model = (await getModelProbePlan()).models.find((item) => item.modelName === 'gpt-4o');
+    expect(model?.tab).toBe('manual-disabled');
+    expect(model?.keyResults).toEqual([]);
+    expect(model?.policyExcludedKeys).toEqual([]);
+    expect(model?.manualExcludedKeys.map((key) => key.keyId).sort()).toEqual([a.id, b.id].sort());
+    expect(model?.manualExcludedKeys.every((key) => key.routeState === 'manual-disabled')).toBe(true);
+    expect(model?.manualExcludedKeys.find((key) => key.keyId === a.id)?.lastProbe?.status).toBe('failed');
+  });
+
   it('moves a model to the manual-disabled tab only when every key is manually disabled', async () => {
     const { account, a, b } = await seed();
     await ban(account.id, a.id);

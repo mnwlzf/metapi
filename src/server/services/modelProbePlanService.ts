@@ -252,6 +252,13 @@ export async function getModelProbePlan() {
     });
   };
   for (const row of disabledRows) {
+    // A probe verdict is historical state, not evidence that this Key still
+    // advertises the model. Current probeable/available combinations already
+    // exist in tokenModelAvailability (including unavailable rows). Only sticky
+    // operator/policy intent may add a display candidate when discovery has no
+    // row; otherwise an old account-wide probe disable is fanned out to every
+    // Key and can keep a manually disabled model in the probe plan forever.
+    if (row.source !== 'manual' && row.source !== 'policy') continue;
     if (row.tokenId && row.tokenId > 0) {
       const tokenMeta = tokenMetaById.get(row.tokenId);
       if (!tokenMeta || tokenMeta.siteId !== row.siteId || (row.accountId != null && tokenMeta.accountId !== row.accountId)) continue;
@@ -263,9 +270,6 @@ export async function getModelProbePlan() {
       if (row.siteId !== meta.siteId) continue;
       addCandidate(meta.tokenId, row.modelName);
     }
-  }
-  for (const probe of latestProbes) {
-    if (probe.tokenId != null) addCandidate(probe.tokenId, probe.modelName);
   }
   const getMatchingDisables = (row: typeof candidateRows[number], modelName: string) => disabledRows.filter((item) => (
     (item.siteId === row.siteId)
