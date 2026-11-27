@@ -616,6 +616,7 @@ export const zhToEnSupplemental: Record<string, string> = {
   '验证中...': 'Verifying...',
   '一个 Key、一个入口，兼容 OpenAI / Claude 下游格式': 'One Key, one entry, compatible with OpenAI/Claude downstream formats',
   '仪表盘': 'Dashboard',
+  '消费分析': 'Consumption',
   '移除通道失败': 'Failed to remove channel',
   '已标记全部为已读': 'Marked all as read',
   '已触发全部签到': 'All sign-ins have been triggered',

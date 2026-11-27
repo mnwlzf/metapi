@@ -3,8 +3,14 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 describe('App sidebar config', () => {
+  it('provides an independent consumption entry in the shared desktop/mobile menu', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8').replace(/\r\n/g, '\n');
+    expect(source).toContain("{ to: '/consumption', label: '消费分析'");
+    expect(source).toContain('<Route path="/consumption" element={<Consumption />} />');
+  });
+
   it('uses 站点管理 for /sites and removes /accounts and /oauth sidebar entries', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8');
+    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8').replace(/\r\n/g, '\n');
 
     expect(source).toContain("{ to: '/sites', label: '站点管理'");
     expect(source).not.toContain("{ to: '/accounts', label:");
@@ -12,7 +18,7 @@ describe('App sidebar config', () => {
   });
 
   it('no longer exposes the OAuth console', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8');
+    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8').replace(/\r\n/g, '\n');
 
     expect(source).not.toContain("{ to: '/oauth', label: 'OAuth 管理'");
     expect(source).not.toContain('OAuthManagement');
@@ -20,7 +26,7 @@ describe('App sidebar config', () => {
   });
 
   it('places downstream key navigation under 控制台 instead of 系统', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8');
+    const source = readFileSync(resolve(process.cwd(), 'src/web/App.tsx'), 'utf8').replace(/\r\n/g, '\n');
     // Trailing newline keeps the breadcrumb map entry out of this match.
     const consoleGroupIndex = source.indexOf("label: tr('控制台'),\n");
     const downstreamIndex = source.indexOf("{ to: '/downstream-keys', label: '下游密钥'");

@@ -1,0 +1,143 @@
+.consumption-workspace {
+  width: 100%;
+  max-width: 1440px;
+  min-width: 0;
+  margin: 0 auto;
+}
+
+.consumption-page-header { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 24px; }
+.consumption-eyebrow { color: var(--color-primary); font-size: 10px; font-weight: 700; letter-spacing: 2px; margin-bottom: 6px; }
+.consumption-page-header h2 { margin: 0; font-size: 25px; letter-spacing: -.7px; }
+.consumption-page-header p { margin: 8px 0 0; color: var(--color-text-muted); font-size: 12px; line-height: 1.8; }
+.consumption-page-header p span { display: inline-block; margin-left: 12px; }
+.consumption-workspace-nav { display: flex; gap: 24px; margin-bottom: 22px; border-bottom: 1px solid var(--color-border-light); }
+.consumption-workspace-nav button { border: 0; border-bottom: 2px solid transparent; background: none; color: var(--color-text-muted); padding: 12px 2px; font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.consumption-workspace-nav button[aria-current=page] { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 600; }
+.consumption-scope { padding: 18px 20px; margin-bottom: 14px; }
+.consumption-scope-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.consumption-scope-top strong { font-size: 13px; margin-right: 14px; }
+.consumption-scope-top span { font-size: 11px; color: var(--color-text-muted); }
+.consumption-presets, .consumption-dimensions { display: flex; padding: 3px; gap: 2px; border-radius: 8px; background: var(--color-bg-inset); border: 1px solid var(--color-border-light); }
+.consumption-presets button, .consumption-dimensions button { border: 0; border-radius: 5px; padding: 6px 12px; background: transparent; color: var(--color-text-secondary); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; }
+.consumption-presets button[aria-pressed=true], .consumption-dimensions button[aria-pressed=true] { color: var(--color-primary); background: var(--color-bg-card); box-shadow: 0 1px 4px #0000000a; font-weight: 600; }
+.consumption-scope-controls { display: flex; align-items: end; gap: 12px; }
+.consumption-scope-controls label { display: grid; flex: 1; min-width: 0; gap: 7px; color: var(--color-text-secondary); font-size: 11px; }
+.consumption-scope-controls input, .consumption-scope-controls select, .consumption-table-toolbar > input, .consumption-table-toolbar select { width: 100%; min-width: 0; min-height: 36px; padding: 8px 10px; border: 1px solid var(--color-border); border-radius: 7px; background: var(--color-bg-inset); color: var(--color-text-primary); font: inherit; font-size: 12px; }
+.consumption-date-divider { padding-bottom: 10px; color: var(--color-text-muted); font-size: 11px; }
+.consumption-filter-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; margin: 12px 0 18px; color: var(--color-text-muted); }
+.consumption-filter-chips button { border: 1px solid var(--color-border-light); background: var(--color-bg-card); color: var(--color-text-secondary); border-radius: 6px; font: inherit; padding: 5px 9px; cursor: pointer; overflow-wrap: anywhere; }
+.consumption-filter-chips button span { margin-left: 7px; color: var(--color-primary); }
+.consumption-coverage-line { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 18px 0 14px; font-size: 11px; color: var(--color-text-muted); }
+.consumption-coverage-line a { margin-left: auto; }
+.consumption-summary-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 16px 0; }
+.consumption-summary-metric { padding: 20px; min-width: 0; }
+.consumption-summary-metric > span { color: var(--color-text-secondary); font-size: 12px; }
+.consumption-summary-metric > strong { display: block; font-size: clamp(22px, 2.2vw, 30px); font-weight: 650; letter-spacing: -1px; line-height: 1.4; margin: 12px 0 8px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.consumption-summary-metric small { color: var(--color-text-muted); font-size: 11px; line-height: 1.7; }
+.consumption-summary-metric.is-primary { border-color: color-mix(in srgb, var(--color-primary) 25%, var(--color-border-light)); background: color-mix(in srgb, var(--color-primary) 5%, var(--color-bg-card)); }
+.consumption-summary-metric.is-primary > strong { color: var(--color-primary); }
+.consumption-section { margin: 16px 0; padding: 20px; min-width: 0; }
+.consumption-section-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; margin-bottom: 18px; }
+.consumption-section-header h3 { font-size: 14px; margin: 0; font-weight: 600; }
+.consumption-section-header p { font-size: 11px; color: var(--color-text-muted); margin: 6px 0 0; line-height: 1.8; }
+.consumption-source-badge { font-size: 10px; color: var(--color-text-muted); border: 1px solid var(--color-border-light); border-radius: 5px; padding: 5px 8px; white-space: nowrap; }
+.consumption-inline-note { color: var(--color-text-muted); font-size: 11px; line-height: 1.9; padding: 10px 0; }
+.consumption-daily-chart { display: grid; gap: 6px; overflow-x: auto; padding: 8px 0 2px; }
+.consumption-chart-day { display: flex; flex-direction: column; align-items: center; gap: 10px; border: 0; background: transparent; color: var(--color-text-secondary); padding: 4px; min-width: 0; font: inherit; font-size: 10px; cursor: pointer; }
+.consumption-chart-day > span:first-child { color: var(--color-text-muted); white-space: nowrap; }
+.consumption-chart-track { position: relative; height: 100px; width: 100%; max-width: 42px; background: var(--color-bg-inset); border-radius: 5px 5px 0 0; display: flex; align-items: flex-end; overflow: hidden; }
+.consumption-chart-track > span { display: block; width: 100%; background: color-mix(in srgb, var(--color-primary) 70%, var(--color-bg-card)); border-radius: 4px 4px 0 0; }
+.consumption-chart-track.is-missing { border: 1px dashed var(--color-border); background: transparent; }
+.consumption-chart-day:hover .consumption-chart-track > span { background: var(--color-primary); }
+.consumption-chart-day small { font-size: 10px; }
+.consumption-metric-details { padding: 16px 20px; margin: 16px 0; }
+.consumption-metric-details > summary { font-size: 12px; cursor: pointer; color: var(--color-text-secondary); }
+.consumption-metric-details > summary > span { color: var(--color-text-muted); margin-left: 14px; font-size: 11px; }
+.consumption-details-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 22px; padding: 24px 0 8px; }
+.consumption-details-grid span { display: block; font-size: 11px; color: var(--color-text-muted); }
+.consumption-details-grid strong { display: block; font-size: 14px; margin-top: 7px; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.consumption-table-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin: 14px 0; }
+.consumption-table-toolbar > input { width: 280px; max-width: 100%; }
+.consumption-table-toolbar > div { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.consumption-table-toolbar span { font-size: 11px; color: var(--color-text-muted); }
+.consumption-table-toolbar select { width: auto; }
+.consumption-section .data-table { width: 100%; font-size: 12px; }
+.consumption-section .data-table th { font-size: 11px; font-weight: 500; color: var(--color-text-muted); white-space: nowrap; }
+.consumption-section .data-table td { font-variant-numeric: tabular-nums; }
+.consumption-section .data-table td:first-child { min-width: 140px; max-width: 280px; overflow-wrap: anywhere; }
+.consumption-amount { font-weight: 600; color: var(--color-text-primary); white-space: nowrap; }
+.consumption-share { display: inline-block; vertical-align: middle; width: 44px; height: 4px; border-radius: 4px; background: var(--color-bg-inset); margin-right: 8px; overflow: hidden; }
+.consumption-share > span { display: block; height: 100%; background: var(--color-primary); border-radius: inherit; }
+.consumption-cell-meta { display: block; font-size: 10px; color: var(--color-text-muted); margin-top: 5px; line-height: 1.6; overflow-wrap: anywhere; }
+.consumption-reconciliation { padding-top: 8px; }
+.consumption-reconciliation > div { padding: 15px 0; border-bottom: 1px solid var(--color-border-light); }
+.consumption-reconciliation strong { font-size: 12px; }
+.consumption-reconciliation p { font-size: 12px; margin: 8px 0; color: var(--color-text-secondary); }
+.consumption-reconciliation small { color: var(--color-text-muted); font-size: 11px; }
+.consumption-status-account { border-top: 1px solid var(--color-border-light); }
+.consumption-status-account > summary { display: flex; align-items: center; gap: 18px; padding: 18px 0; cursor: pointer; list-style: none; }
+.consumption-status-account > summary::-webkit-details-marker { display: none; }
+.consumption-status-account > summary::after { content: '+'; color: var(--color-text-muted); margin-left: auto; font-size: 16px; }
+.consumption-status-account[open] > summary::after { content: '−'; }
+.consumption-status-account > summary > div { min-width: 150px; width: 25%; overflow-wrap: anywhere; }
+.consumption-status-account strong { display: block; font-size: 12px; }
+.consumption-status-account summary div span { display: block; color: var(--color-text-muted); font-size: 11px; margin-top: 5px; }
+.consumption-status-badge { display: inline-block; flex-shrink: 0; font-size: 10px; padding: 4px 8px; border-radius: 5px; white-space: nowrap; line-height: 1.5; }
+.consumption-status-badge.is-success { color: var(--color-primary); background: color-mix(in srgb, var(--color-primary) 10%, transparent); }
+.consumption-status-badge.is-muted { color: var(--color-text-muted); background: var(--color-bg-inset); }
+.consumption-status-badge.is-warning { color: var(--color-warning, #b7791f); background: color-mix(in srgb, var(--color-warning, #b7791f) 10%, transparent); }
+.consumption-status-badge.is-danger { color: var(--color-danger, #d14b4b); background: color-mix(in srgb, var(--color-danger, #d14b4b) 10%, transparent); }
+.consumption-status-time { color: var(--color-text-muted); font-size: 11px; }
+.consumption-status-body { padding: 0 16px 16px; border: 1px solid var(--color-border-light); border-radius: 8px; margin-bottom: 16px; background: var(--color-bg-inset); }
+.consumption-checkbox { display: inline-flex; align-items: center; gap: 7px; color: var(--color-text-secondary); font-size: 12px; cursor: pointer; }
+.consumption-checkbox input { accent-color: var(--color-primary); }
+.consumption-status-footer, .consumption-bottom-actions, .consumption-page-footer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; font-size: 11px; color: var(--color-text-muted); line-height: 1.9; }
+.consumption-status-footer { padding-top: 14px; }
+.consumption-page-footer { border-top: 1px solid var(--color-border-light); padding: 18px 0 6px; margin-top: 22px; }
+.consumption-workspace a { color: var(--color-primary); }
+.consumption-workspace a.btn-primary { color: white; }
+.consumption-workspace button:focus-visible, .consumption-workspace summary:focus-visible, .consumption-workspace input:focus-visible, .consumption-workspace select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 3px; }
+
+@media (max-width: 1100px) {
+  .consumption-page-header { align-items: flex-start; flex-direction: column; gap: 14px; }
+  .consumption-summary-grid { gap: 10px; }
+  .consumption-summary-metric { padding: 16px; }
+}
+@media (max-width: 767px) {
+  .consumption-page-header { margin-bottom: 14px; }
+  .consumption-page-header h2 { font-size: 22px; }
+  .consumption-page-header p span { display: block; margin-left: 0; }
+  .consumption-page-header .consumption-actions { width: 100%; }
+  .consumption-page-header .consumption-actions > * { flex: 1; text-align: center; justify-content: center; font-size: 11px; padding-inline: 8px; }
+  .consumption-workspace-nav { gap: 24px; margin-bottom: 14px; overflow-x: auto; }
+  .consumption-workspace-nav button { font-size: 12px; }
+  .consumption-scope { padding: 14px; }
+  .consumption-scope-top { margin-bottom: 12px; }
+  .consumption-scope-top > div:first-child { display: grid; gap: 6px; }
+  .consumption-presets { width: 100%; }
+  .consumption-presets button { flex: 1; padding-inline: 6px; }
+  .consumption-scope-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 12px; }
+  .consumption-date-divider { display: none; }
+  .consumption-coverage-line { gap: 8px; line-height: 1.8; }
+  .consumption-coverage-line a { margin-left: 0; }
+  .consumption-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .consumption-summary-metric { padding: 14px; }
+  .consumption-summary-metric > span { font-size: 11px; }
+  .consumption-summary-metric > strong { font-size: 22px; margin: 10px 0 5px; }
+  .consumption-summary-metric small { font-size: 10px; }
+  .consumption-section { padding: 14px; }
+  .consumption-section-header { align-items: flex-start; }
+  .consumption-dimensions { width: 100%; }
+  .consumption-dimensions button { flex: 1; }
+  .consumption-table-toolbar > input { width: 100%; }
+  .consumption-table-toolbar > div { width: 100%; justify-content: space-between; gap: 10px; }
+  .consumption-table-toolbar select { max-width: 100%; }
+  .consumption-metric-details { padding: 14px; }
+  .consumption-metric-details > summary > span { display: block; margin: 6px 0 0 16px; }
+  .consumption-details-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+  .consumption-status-account > summary { gap: 10px; flex-wrap: wrap; }
+  .consumption-status-account > summary > div { min-width: 0; width: auto; flex: 1; }
+  .consumption-status-time { width: 100%; order: 1; }
+  .consumption-status-body { padding-inline: 10px; }
+  .consumption-source-badge { font-size: 9px; }
+}

@@ -13,7 +13,7 @@ import './consumption.css';
 
 const fields: Array<{ key: Exclude<keyof UsageCollectionPolicy, 'enabled'>; label: string; min: number; max: number; hint: string }> = [
   { key: 'statsMinutes', label: '总览基础间隔（分钟）', min: 5, max: 10080, hint: '实际消费、请求与厂商统计' },
-  { key: 'keysMinutes', label: 'Key 基础间隔（分钟）', min: 5, max: 10080, hint: '今日与近 30 天 Key 消费' },
+  { key: 'keysMinutes', label: 'Key 基础间隔（分钟）', min: 5, max: 10080, hint: '今日与上游累计 Key 消费' },
   { key: 'modelsMinutes', label: '模型基础间隔（分钟）', min: 5, max: 10080, hint: '当天模型费用与 Token 汇总' },
   { key: 'jitterPercent', label: '随机摆动（±%）', min: 0, max: 80, hint: '每轮独立随机，避免同时集中请求' },
   { key: 'gapMinSeconds', label: '请求间隔下限（秒）', min: 2, max: 300, hint: '同一上游地址内串行错峰' },

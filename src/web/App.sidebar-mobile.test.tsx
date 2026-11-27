@@ -178,6 +178,8 @@ describe('App mobile sidebar', () => {
       await flushMicrotasks();
 
       expect(collectText(root.root)).toContain('导航菜单');
+      expect(root.root.findAll((node) => node.type === 'a' && node.props.href === '/consumption')).toHaveLength(1);
+      expect(collectText(root.root)).toContain('消费分析');
 
       const closeButton = root.root.find((node) => (
         node.type === 'button'
