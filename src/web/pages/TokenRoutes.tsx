@@ -4,7 +4,6 @@ import type { DragEndEvent } from '@dnd-kit/core';
 import { api } from '../api.js';
 import { BrandGlyph, getBrand, type BrandInfo } from '../components/BrandIcon.js';
 import { useToast } from '../components/Toast.js';
-import ModernSelect from '../components/ModernSelect.js';
 import { MobileCard, MobileField } from '../components/MobileCard.js';
 import ResponsiveFilterPanel from '../components/ResponsiveFilterPanel.js';
 import { useIsMobile } from '../components/useIsMobile.js';
@@ -53,12 +52,13 @@ import {
 import { applyPriorityRailDrop, isPriorityRailNewLayerId } from './token-routes/priorityRail.js';
 import { useRouteChannels } from './token-routes/useRouteChannels.js';
 import RouteFilterBar, { type EnabledFilter } from './token-routes/RouteFilterBar.js';
+import RoutePageToolbar from './token-routes/RoutePageToolbar.js';
 import ManualRoutePanel from './token-routes/ManualRoutePanel.js';
 import RouteCard from './token-routes/RouteCard.js';
 import AddChannelModal from './token-routes/AddChannelModal.js';
 import TokenRouteConfirmModal, { type TokenRouteConfirmState } from './token-routes/TokenRouteConfirmModal.js';
 import RouteCompareModal from './token-routes/RouteCompareModal.js';
-import { StatusText, StatusPill } from '../components/StatusText.js';
+import { StatusText } from '../components/StatusText.js';
 import PaginationControls from '../components/PaginationControls.js';
 import { useClientPagination } from '../components/useClientPagination.js';
 import { usePersistedPageSize } from '../components/usePersistedPageSize.js';
@@ -1594,58 +1594,25 @@ export default function TokenRoutes() {
           }} />
         </div>
       )}
-      {/* Toolbar: search + sort + actions */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
-        <div className="toolbar-search" style={{ minWidth: 140, flex: 1, maxWidth: 360 }}>
-          <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={tr('搜索模型路由...')}
-          />
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <div style={{ minWidth: 128 }}>
-            <ModernSelect
-              size="sm"
-              value={sortBy}
-              onChange={(nextValue) => {
-                const nextSortBy = nextValue as RouteSortBy;
-                setSortBy(nextSortBy);
-                setSortDir(nextSortBy === 'modelPattern' ? 'asc' : 'desc');
-              }}
-              options={[
-                { value: 'modelPattern', label: tr('模型名称') },
-                { value: 'channelCount', label: tr('通道数量') },
-              ]}
-              placeholder={tr('排序字段')}
-            />
-          </div>
-          <button
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 11px', fontSize: 12 }}
-            onClick={() => setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-            data-tooltip={tr('切换排序方向')}
-            aria-label={tr('切换排序方向')}
-          >
-            {sortDir === 'asc' ? tr('升序 ↑') : tr('降序 ↓')}
-          </button>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderLeft: '1px solid var(--color-border)', paddingLeft: 8, flexWrap: 'wrap' }}>
+      <RoutePageToolbar
+        search={search}
+        onSearchChange={setSearch}
+        sortBy={sortBy}
+        sortDir={sortDir}
+        onSortChange={(nextSortBy) => {
+          setSortBy(nextSortBy);
+          setSortDir(nextSortBy === 'modelPattern' ? 'asc' : 'desc');
+        }}
+        onToggleSortDir={() => setSortDir((prev) => prev === 'asc' ? 'desc' : 'asc')}
+        enabledFilter={enabledFilter}
+        onEnabledFilterChange={setEnabledFilter}
+        counts={enabledCounts}
+        totalCount={baseFilteredRoutes.length}
+        primaryActions={<>
           <button
             onClick={handleRefreshRouteDecisions}
             disabled={loadingDecision}
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
+            className="btn btn-ghost route-toolbar-button"
           >
             {loadingDecision ? (
               <><span className="spinner spinner-sm" /> {tr('刷新中...')}</>
@@ -1653,26 +1620,10 @@ export default function TokenRoutes() {
               tr('刷新选中概率')
             )}
           </button>
-
-          <button
-            onClick={async () => {
-              const next = !showRecentSelections;
-              setShowRecentSelections(next);
-              if (next) await loadRecentSelections();
-            }}
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
-          >
-            {loadingRecentSelections ? (
-              <><span className="spinner spinner-sm" /> {tr('加载中...')}</>
-            ) : (
-              tr(showRecentSelections ? tr('收起最近选路') : tr('最近选路'))
-            )}
-          </button>
           <button
             onClick={handleRebuild}
             disabled={rebuilding}
-            className="btn btn-ghost"
+            className="btn btn-primary"
             style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
           >
             {rebuilding ? (
@@ -1681,19 +1632,32 @@ export default function TokenRoutes() {
               tr('自动重建')
             )}
           </button>
-
           <button
             onClick={() => {
               loadCandidates();
               resetRouteForm();
               setShowManual(true);
             }}
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
+            className="btn btn-ghost route-toolbar-button"
           >
             {tr('新建群组')}
           </button>
-
+        </>}
+        secondaryActions={<>
+          <button
+            onClick={async () => {
+              const next = !showRecentSelections;
+              setShowRecentSelections(next);
+              if (next) await loadRecentSelections();
+            }}
+            className="btn btn-ghost route-toolbar-button"
+          >
+            {loadingRecentSelections ? (
+              <><span className="spinner spinner-sm" /> {tr('加载中...')}</>
+            ) : (
+              tr(showRecentSelections ? tr('收起最近选路') : tr('最近选路'))
+            )}
+          </button>
           <button
             onClick={toggleBatchSelectMode}
             className={`btn ${batchSelectMode ? 'btn-primary' : 'btn-ghost'}`}
@@ -1701,7 +1665,6 @@ export default function TokenRoutes() {
           >
             {batchSelectMode ? tr('退出批量') : tr('批量操作')}
           </button>
-
           <button
             type="button"
             aria-pressed={showZeroChannelRoutes}
@@ -1709,23 +1672,19 @@ export default function TokenRoutes() {
               if (!showZeroChannelRoutes) loadCandidates();
               setShowZeroChannelRoutes((prev) => !prev);
             }}
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
+            className="btn btn-ghost route-toolbar-button"
           >
             {showZeroChannelRoutes ? tr('隐藏 0 通道路由') : tr('显示 0 通道路由')}
           </button>
-
           <button
             type="button"
             onClick={() => setCompareOpen(true)}
-            className="btn btn-ghost"
-            style={{ border: '1px solid var(--color-border)', padding: '7px 12px' }}
+            className="btn btn-ghost route-toolbar-button"
           >
             {tr('路由比对')}
           </button>
-        </div>
-
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end', flexShrink: 0, maxWidth: '100%' }}>
+        </>}
+        statusHint={<>
           {(() => {
             const coolingRoutes = routeSummaries.filter((r) => (r.cooldownChannelCount || 0) > 0);
             if (coolingRoutes.length === 0) return null;
@@ -1765,11 +1724,8 @@ export default function TokenRoutes() {
               {isMobile ? tr('部分路由暂无快照') : tr('部分路由尚无快照，可手动刷新或等待后台任务')}
             </span>
           )}
-          <StatusPill tone="info" style={{ fontSize: 12, fontWeight: 500 }}>
-            {tr('共')} {filteredRoutes.length} {tr('条路由')}
-          </StatusPill>
-        </div>
-      </div>
+        </>}
+      />
 
       {/* Collapsible filter panel */}
       <ResponsiveFilterPanel
@@ -1887,11 +1843,13 @@ export default function TokenRoutes() {
         </div>
       )}
 
+      <div className="route-page-list-heading"><span>{tr('路由列表')}</span><span>{tr('共')} {filteredRoutes.length} {tr('条路由')}</span></div>
       <div className={isMobile ? 'mobile-card-list' : 'route-card-grid'}>
       {showRecentSelections && (
         <div
           className="card"
           style={{
+            gridColumn: '1 / -1',
             marginBottom: 12,
             padding: 12,
             border: '1px solid var(--color-border)',

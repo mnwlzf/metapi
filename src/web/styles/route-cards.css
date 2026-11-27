@@ -1,3 +1,43 @@
+/* ===== Route page header and controls ===== */
+.route-page-header,
+.route-page-heading,
+.route-page-actions,
+.route-page-toolbar,
+.route-page-status-filters,
+.route-page-sort,
+.route-page-status-hint,
+.route-page-list-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.route-page-header { justify-content: space-between; flex-wrap: wrap; margin-bottom: 16px; gap: 12px; }
+.route-page-heading { gap: 10px; min-width: 0; }
+.route-page-heading h2 { margin: 0; font-size: 20px; font-weight: 600; color: var(--color-text-primary); }
+.route-page-heading p { margin: 3px 0 0; font-size: 12px; color: var(--color-text-muted); }
+.route-page-mark { display: grid; place-items: center; width: 36px; height: 36px; flex-shrink: 0; border-radius: 10px; background: var(--color-info-soft); color: var(--color-info); font-weight: 700; }
+.route-page-actions { flex-wrap: wrap; }
+.route-page-actions .btn { padding: 7px 12px; }
+.route-page-toolbar { flex-wrap: wrap; padding: 10px 0; border-top: 1px solid var(--color-border); border-bottom: 1px solid var(--color-border); gap: 10px; }
+.route-page-search { min-width: 180px; flex: 1 1 220px; max-width: 340px; }
+.route-page-status-filters { flex-wrap: wrap; gap: 3px; }
+.route-status-filter { display: inline-flex; align-items: center; gap: 5px; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-secondary); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.route-status-filter span { font-variant-numeric: tabular-nums; font-size: 11px; opacity: 0.8; }
+.route-status-filter:hover { background: var(--color-bg); }
+.route-status-filter.is-active { background: var(--color-info-soft); color: var(--color-info); border-color: color-mix(in srgb, var(--color-info) 24%, transparent); }
+.route-page-sort { margin-left: auto; min-width: 0; gap: 5px; }
+.route-page-sort > :first-child { width: 128px; min-width: 0; }
+.route-toolbar-button { border: 1px solid var(--color-border); padding: 7px 10px; font-size: 12px; white-space: nowrap; }
+.route-page-more { position: relative; }
+.route-page-more summary { list-style: none; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.route-page-more summary::-webkit-details-marker { display: none; }
+.route-page-more-actions { position: absolute; right: 0; top: calc(100% + 6px); z-index: 40; display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-width: 180px; max-width: calc(100vw - 32px); padding: 6px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-card); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
+.route-page-more-actions .btn { justify-content: flex-start; border: none !important; text-align: left; }
+.route-page-status-hint { flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; padding: 8px 0; }
+.route-page-list-heading { justify-content: space-between; margin: 12px 0 8px; font-size: 12px; color: var(--color-text-muted); }
+.route-active-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; padding: 0 10px 8px; }
+
 /* ===== Route Filter Bar (Collapsible, horizontal chips) ===== */
 .route-filter-bar {
   margin-bottom: 8px;
@@ -153,34 +193,38 @@
 /* ===== Route Card Grid (multi-column) ===== */
 .route-card-grid {
   display: grid;
-  /* 2 columns at 1440px, not 3: with the mode label and the channel chips a
-     400px lane wraps into a third line and every card reads as crowded. */
-  grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr));
+  gap: 9px;
   align-items: start;
 }
 
 /* Collapsed route card */
 .route-card-collapsed {
-  padding: 8px 10px;
+  min-width: 0;
+  min-height: 88px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 11px 12px;
   border-radius: var(--radius-md);
   border-color: var(--color-border);
   background: var(--color-bg-card);
-  box-shadow: 0 4px 12px rgba(28,25,23, 0.05);
+  box-shadow: none;
   transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease, background-color 0.16s ease;
 }
 
+.route-summary-header { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.route-summary-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+
 .route-card-collapsed.is-active {
   border-color: var(--color-info);
+  background: color-mix(in srgb, var(--color-info-soft) 40%, var(--color-bg-card));
   box-shadow: 0 0 0 1px rgba(13,148,136, 0.25);
 }
 
 .route-card-collapsed:hover {
   border-color: color-mix(in srgb, var(--color-info) 28%, var(--color-border));
-  box-shadow:
-    0 12px 22px rgba(28,25,23, 0.05),
-    0 0 0 1px color-mix(in srgb, var(--color-info) 10%, transparent);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-info) 10%, transparent);
 }
 
 /* Expanded route card spans full width */
@@ -210,6 +254,7 @@
 
 .route-detail-panel-presence {
   overflow: visible;
+  order: 1;
 }
 
 .route-detail-panel-presence.is-closing {
@@ -260,7 +305,7 @@
 
 [data-theme="dark"] .route-card-collapsed {
   background: var(--color-bg-card);
-  box-shadow: 0 8px 18px rgba(28,25,23, 0.28);
+  box-shadow: none;
 }
 
 [data-theme="dark"] .route-card-expanded {
@@ -269,6 +314,14 @@
 }
 
 @media (max-width: 768px) {
+  .route-page-header { align-items: flex-start; }
+  .route-page-actions { width: 100%; }
+  .route-page-actions .btn { flex: 1; }
+  .route-page-search { max-width: none; flex-basis: 100%; }
+  .route-page-status-filters { flex: 1 1 100%; }
+  .route-page-sort { margin-left: 0; }
+  .route-page-more { margin-left: auto; }
+  .route-page-status-hint { justify-content: flex-start; }
   .route-batch-bar {
     border-radius: var(--radius-md);
     padding: 9px 10px;
@@ -277,4 +330,9 @@
   .route-card-grid {
     grid-template-columns: 1fr;
   }
+}
+
+@media (pointer: coarse) {
+  .route-status-filter,
+  .route-toolbar-button { min-height: 44px; }
 }

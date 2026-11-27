@@ -55,7 +55,8 @@ function findButtonByText(root: ReactTestInstance, text: string): ReactTestInsta
   return root.find((node) => (
     node.type === 'button'
     && typeof node.props.onClick === 'function'
-    && collectText(node).includes(text)
+    && !String(node.props.className || '').includes('route-status-filter')
+    && collectText(node).trim() === text
   ));
 }
 

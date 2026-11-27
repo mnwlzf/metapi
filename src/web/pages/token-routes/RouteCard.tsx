@@ -652,6 +652,7 @@ function RouteCardInner({
         tabIndex={0}
         aria-expanded={summaryExpanded}
         onKeyDown={(event) => {
+          if (event.target !== event.currentTarget) return;
           if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault();
             onToggleExpand(route.id);
@@ -659,7 +660,7 @@ function RouteCardInner({
         }}
         style={{ cursor: 'pointer' }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <div className="route-summary-header">
           <span style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, width: 20, height: 20 }}>
             {routeIcon.kind === 'brand' ? (
               <BrandGlyph icon={routeIcon.value} alt={title} size={18} fallbackText={title} />
@@ -677,6 +678,7 @@ function RouteCardInner({
             style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, flex: '1 1 180px' }}
           >
             <code
+              data-tooltip={title}
               style={{
                 fontWeight: 600,
                 fontSize: 13,
@@ -726,6 +728,8 @@ function RouteCardInner({
             />
           )}
 
+        </div>
+        <div className="route-summary-meta">
           {explicitGroupRoute && explicitGroupSourceCount > 0 ? (
             <>
               <span className="badge badge-muted" style={{ fontSize: 10, flexShrink: 0 }}>
@@ -785,7 +789,7 @@ function RouteCardInner({
           )}
           {routeModeLabel ? (
             <span className="badge badge-muted" style={{ fontSize: 10, flexShrink: 0 }}>
-              {tr('模式')}：{routeModeLabel}
+              {routeModeLabel}
             </span>
           ) : null}
           {hasCachedDecisionSnapshot ? (
@@ -808,6 +812,7 @@ function RouteCardInner({
             width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2"
             style={{
               flexShrink: 0,
+              marginLeft: 'auto',
               color: 'var(--color-text-muted)',
               transform: summaryExpanded ? 'rotate(180deg)' : 'none',
               transition: 'transform 0.18s ease',

@@ -1807,6 +1807,10 @@ export const zhToEnSupplemental: Record<string, string> = {
   '个': 'items',
   '剩余': 'Remaining ',
   '冷却': 'Cooling ',
+  '查看模型的可用通道，并按需展开账号配置': 'View available model channels and expand account settings as needed',
+  '更多操作': 'More actions',
+  '路由列表': 'Route list',
+  '移除筛选': 'Remove filter',
 
 
 

@@ -48,6 +48,7 @@ function FilterChip({
     <button
       type="button"
       className={`filter-chip ${active ? 'active' : ''}`}
+      aria-pressed={active}
       onClick={onClick}
     >
       {icon && <span className="filter-chip-icon">{icon}</span>}
@@ -112,6 +113,14 @@ export default function RouteFilterBar(props: RouteFilterBarProps) {
     !collapsed,
     FILTER_EXPANDED_CONTENT_UNMOUNT_MS,
   );
+  const activeFilters: Array<{ label: string; clear: () => void }> = [];
+  if (activeBrand) activeFilters.push({ label: `${tr('品牌')}：${activeBrand === '__other__' ? tr('其他') : activeBrand}`, clear: () => setActiveBrand(null) });
+  if (activeSite) activeFilters.push({ label: `${tr('站点')}：${activeSite}`, clear: () => setActiveSite(null) });
+  if (activeEndpointType) activeFilters.push({ label: `${tr('能力')}：${activeEndpointType}`, clear: () => setActiveEndpointType(null) });
+  if (activeGroupFilter !== null) activeFilters.push({
+    label: `${tr('群组')}：${activeGroupFilter === '__all__' ? tr('全部') : (groupRouteList.find((group) => group.id === activeGroupFilter)?.title || `#${activeGroupFilter}`)}`,
+    clear: () => setActiveGroupFilter(null),
+  });
 
   return (
     <div className="route-filter-bar">
@@ -137,6 +146,15 @@ export default function RouteFilterBar(props: RouteFilterBarProps) {
           enabledFilter={enabledFilter}
         />
       </button>
+      {activeFilters.length > 0 && (
+        <div className="route-active-filters">
+          {activeFilters.map((filter) => (
+            <button key={filter.label} type="button" className="filter-chip active" onClick={filter.clear} aria-label={`${tr('移除筛选')} ${filter.label}`}>
+              <span className="filter-chip-label" data-tooltip={filter.label}>{filter.label}</span><span aria-hidden>×</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Expanded panel */}
       <div className={`anim-collapse route-filter-bar-presence ${presenceOpen ? 'is-open' : ''}`.trim()}>
